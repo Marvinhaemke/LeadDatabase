@@ -29,8 +29,5 @@ supabase/.branches
 supabase/.temp
 supabase/seed.sql.bak
 
-# generated
-packages/db/src/generated.ts
-
 # vercel
 .vercel

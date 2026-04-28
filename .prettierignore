@@ -4,3 +4,4 @@ dist
 .pnpm-store
 packages/db/src/generated.ts
 supabase/migrations
+
