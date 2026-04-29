@@ -4,7 +4,7 @@ const nextConfig = {
   experimental: {
     typedRoutes: true,
   },
-  transpilePackages: ['db', 'ai'],
+  transpilePackages: ['db', 'ai', 'meta'],
 };
 
 export default nextConfig;
