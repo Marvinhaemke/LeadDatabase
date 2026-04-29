@@ -16,7 +16,6 @@ export async function GET(req: Request) {
   }
 
   const client = createSupabaseAdminClient();
-  // @ts-expect-error rpc isn't in the placeholder Database type
   const { data, error } = await client.rpc('sweep_bookings_to_no_show', {
     p_grace_minutes: 15,
     p_limit: 200,

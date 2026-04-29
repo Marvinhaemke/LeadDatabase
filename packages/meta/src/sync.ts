@@ -372,11 +372,11 @@ export async function syncAllMetaAccounts(opts: {
     .eq('platform', 'meta');
   if (error) throw new Error(`load ad_accounts: ${error.message}`);
 
-  const accounts = (data ?? []) as Array<{
+  const accounts = (data ?? []) as unknown as Array<{
     id: string;
     external_id: string;
     company_id: string;
-    companies: { slug: string } | null;
+    companies: { slug: string } | { slug: string }[] | null;
   }>;
 
   const out: Array<SyncSummary & { companyId: string; companySlug: string | null }> = [];
@@ -390,7 +390,8 @@ export async function syncAllMetaAccounts(opts: {
       apiVersion: opts.apiVersion,
       windowDays: opts.windowDays,
     });
-    out.push({ ...summary, companyId: acct.company_id, companySlug: acct.companies?.slug ?? null });
+    const slug = Array.isArray(acct.companies) ? (acct.companies[0]?.slug ?? null) : (acct.companies?.slug ?? null);
+    out.push({ ...summary, companyId: acct.company_id, companySlug: slug });
   }
   return out;
 }

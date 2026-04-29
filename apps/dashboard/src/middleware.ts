@@ -4,7 +4,7 @@
  * company_id + app_role there). Route gating itself happens in layouts —
  * middleware just keeps the cookie healthy.
  */
-import { createServerClient } from '@supabase/ssr';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
 export async function middleware(req: NextRequest) {
@@ -19,7 +19,7 @@ export async function middleware(req: NextRequest) {
       getAll() {
         return req.cookies.getAll();
       },
-      setAll(items) {
+      setAll(items: { name: string; value: string; options: CookieOptions }[]) {
         for (const { name, value, options } of items) {
           req.cookies.set(name, value);
           res.cookies.set(name, value, options);

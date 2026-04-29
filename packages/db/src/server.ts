@@ -19,17 +19,17 @@ export function createSupabaseServerClient(cookieStore: CookieStore) {
 
   return createServerClient<Database>(url, anonKey, {
     cookies: {
-      get(name) {
+      get(name: string) {
         return cookieStore.get(name)?.value;
       },
-      set(name, value, options) {
+      set(name: string, value: string, options: CookieOptions) {
         try {
           cookieStore.set(name, value, options);
         } catch {
           // No-op in Server Components — cookies are read-only outside Route Handlers/Actions.
         }
       },
-      remove(name, options) {
+      remove(name: string, options: CookieOptions) {
         try {
           cookieStore.set(name, '', { ...options, maxAge: 0 });
         } catch {

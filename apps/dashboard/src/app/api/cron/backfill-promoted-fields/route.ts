@@ -17,7 +17,6 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const client = createSupabaseAdminClient();
-  // @ts-expect-error rpc not in placeholder Database types
   const { data, error } = await client.rpc('backfill_applied_proposals');
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ proposals: (data ?? []).length, results: data ?? [] });

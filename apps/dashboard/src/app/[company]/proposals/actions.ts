@@ -68,7 +68,6 @@ export async function approveProposal(formData: FormData): Promise<void> {
     })
     .eq('id', proposalId);
 
-  // @ts-expect-error rpc not in placeholder Database types
   const { data, error } = await admin.rpc('apply_field_proposal', {
     p_proposal_id: proposalId,
     p_actor: user.userId,
