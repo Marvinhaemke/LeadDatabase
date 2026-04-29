@@ -530,11 +530,20 @@ async function upsertFieldProposals(
       .maybeSingle();
 
     if (existing) {
-      // Don't disturb decided proposals.
+      // Don't disturb decided proposals — but always bump last_seen_at so
+      // the operator can tell whether a rejected key is still arriving.
       if (existing.status === 'pending') {
         await client
           .from('field_proposals')
-          .update({ occurrence_count: existing.occurrence_count + 1 })
+          .update({
+            occurrence_count: existing.occurrence_count + 1,
+            last_seen_at: new Date().toISOString(),
+          })
+          .eq('id', existing.id);
+      } else {
+        await client
+          .from('field_proposals')
+          .update({ last_seen_at: new Date().toISOString() })
           .eq('id', existing.id);
       }
       ids.push(existing.id);
