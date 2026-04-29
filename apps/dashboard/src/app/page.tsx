@@ -1,10 +1,10 @@
-export default function HomePage() {
-  return (
-    <main className="mx-auto max-w-3xl p-8">
-      <h1 className="text-2xl font-semibold">Lead Funnel Dashboard</h1>
-      <p className="mt-2 text-muted-foreground">
-        Sign in to see your company&rsquo;s funnel metrics.
-      </p>
-    </main>
-  );
+import { redirect } from 'next/navigation';
+import { getCurrentUser } from '@/lib/auth';
+
+export default async function HomePage() {
+  const user = await getCurrentUser();
+  if (!user) redirect('/sign-in');
+  if (user.role === 'admin') redirect('/admin');
+  if (user.companySlug) redirect(`/${user.companySlug}`);
+  redirect('/awaiting-access');
 }

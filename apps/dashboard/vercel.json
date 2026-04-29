@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/process-webhooks",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/sweep-bookings",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
