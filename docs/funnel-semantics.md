@@ -131,12 +131,56 @@ When a webhook arrives with a field Gemini doesn't recognise, the field is
 written into the entity's `attributes jsonb` column. The ingest worker also
 emits a row in `field_proposals` (deduped on `(company_id, entity, field_key)`).
 
-Once a proposal accumulates enough usage, an operator approves it via the
-dashboard. Approval triggers a normal SQL migration (`pnpm db:diff`) that:
+### Data-preservation invariant
 
-1. Adds a typed column on the entity table.
-2. Backfills it from `attributes ->> 'key'`.
-3. Drops the key from `attributes` (optional, configurable per proposal).
-4. Updates `field_proposals.status = 'applied'`.
+**Review is non-blocking.** Unknown fields are stored in `attributes` from the
+moment they arrive. They stay there forever unless explicitly dropped by an
+operator. If a proposal sits pending for 30 days, no data is lost — the AI
+keeps writing every value into `attributes`, the dashboard can read them via
+`attributes ->> 'key'`, and the proposal's `occurrence_count` keeps climbing.
+
+### Promotion flow
+
+1. Operator opens `/[company]/proposals/<id>`, sees:
+   - sample of recent values (from real rows in the entity table),
+   - inferred Postgres type,
+   - count of rows already carrying the attribute.
+2. Operator approves with `(target_column_name, target_column_type,
+   drop_attribute_after)`.
+3. The dashboard calls the `apply_field_proposal(p_proposal_id, p_actor)`
+   SQL function (admin-only, service-role-only). Inside one transaction it:
+   - validates `target_column_name` against `^[a-z_][a-z0-9_]{0,62}$`,
+   - validates `target_column_type` against an allow-list
+     (`text`, `citext`, `numeric`, `integer`, `bigint`, `boolean`,
+     `timestamptz`, `date`, `jsonb`),
+   - `ALTER TABLE entity ADD COLUMN IF NOT EXISTS …` (idempotent),
+   - `UPDATE entity SET col = (attributes ->> 'key')::type WHERE company_id =
+     proposal.company_id AND attributes ? 'key'`,
+   - if `drop_attribute_after = true`: `UPDATE entity SET attributes =
+     attributes - 'key' …`,
+   - marks the proposal `applied` with `applied_at` / `applied_by`.
+4. The dashboard invalidates the per-company schema-summary cache. The next
+   ingest call shows Gemini the new typed column under "PROMOTED TYPED
+   COLUMNS" so future payloads land directly on the column.
+
+### Why `drop_attribute_after` is off by default
+
+Until Gemini's schema-summary cache refreshes (10-min TTL) AND the AI starts
+writing to the typed column, fresh writes still go to `attributes`. With the
+key kept in `attributes`, the daily `backfill_applied_proposals` cron
+(03:31 UTC) re-runs the `attributes → column` UPDATE so the column never
+falls behind by more than a day.
+
+Once the AI is reliably writing to the typed column (check by inspecting
+`webhook_processing_log.applied_changes`), an operator can re-open the
+proposal and re-apply it with `drop_attribute_after = true` to remove the
+duplication. (Or just leave both — disk is cheap.)
+
+### Rejection
+
+Rejection is purely a queue cleanup. It does **not** delete any data from
+`attributes`. The same key can be re-proposed by a later webhook (we may
+later teach the AI to skip rejected keys via the schema-summary; for now the
+operator just rejects again).
 
 The AI never issues DDL directly — see the architecture discussion for why.

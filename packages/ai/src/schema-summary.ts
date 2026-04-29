@@ -60,23 +60,38 @@ export async function buildSchemaSummary(
   client: Client,
   companyId: string,
 ): Promise<SchemaSummary> {
-  const [stagesRes, aliasesRes, leadKeysRes, bookingKeysRes, dealKeysRes] = await Promise.all([
-    client
-      .from('pipeline_stages')
-      .select('key,label,position')
-      .eq('company_id', companyId)
-      .order('position'),
-    client
-      .from('entity_aliases')
-      .select('entity,canonical_key,alias')
-      .or(`company_id.eq.${companyId},company_id.is.null`),
-    sampleAttributeKeys(client, 'leads', companyId),
-    sampleAttributeKeys(client, 'bookings', companyId),
-    sampleAttributeKeys(client, 'deals', companyId),
-  ]);
+  const [stagesRes, aliasesRes, leadKeysRes, bookingKeysRes, dealKeysRes, promotedRes] =
+    await Promise.all([
+      client
+        .from('pipeline_stages')
+        .select('key,label,position')
+        .eq('company_id', companyId)
+        .order('position'),
+      client
+        .from('entity_aliases')
+        .select('entity,canonical_key,alias')
+        .or(`company_id.eq.${companyId},company_id.is.null`),
+      sampleAttributeKeys(client, 'leads', companyId),
+      sampleAttributeKeys(client, 'bookings', companyId),
+      sampleAttributeKeys(client, 'deals', companyId),
+      // Promoted columns: applied field proposals that now have a typed column.
+      // The AI should prefer writing to lead_typed/booking.attributes etc as
+      // typed values rather than re-creating the JSONB key.
+      client
+        .from('field_proposals')
+        .select('entity, field_key, target_column_name, target_column_type')
+        .eq('status', 'applied')
+        .eq('company_id', companyId),
+    ]);
 
   const stages = stagesRes.data ?? [];
   const aliases = aliasesRes.data ?? [];
+  const promoted = (promotedRes.data ?? []) as Array<{
+    entity: string;
+    field_key: string;
+    target_column_name: string;
+    target_column_type: string;
+  }>;
 
   const stageList = stages
     .map((s) => `  ${s.key} ("${s.label}", position ${s.position})`)
@@ -84,6 +99,13 @@ export async function buildSchemaSummary(
 
   const aliasList = aliases
     .map((a) => `  ${a.entity}.${a.alias} → ${a.canonical_key}`)
+    .join('\n');
+
+  const promotedList = promoted
+    .map(
+      (p) =>
+        `  ${p.entity}.${p.target_column_name} (${p.target_column_type}) — promoted from attributes.${p.field_key}`,
+    )
     .join('\n');
 
   const text = [
@@ -94,6 +116,12 @@ export async function buildSchemaSummary(
     '',
     'KNOWN ALIASES (map these source field names to the canonical key):',
     aliasList || '  (none)',
+    '',
+    'PROMOTED TYPED COLUMNS (these started as attributes; now they are real columns —',
+    'prefer writing the value into lead_typed/booking.attributes/deal.attributes as the',
+    'TYPED form, but you may keep it in *_attributes too — a daily backfill keeps them',
+    'in sync until the AI fully migrates):',
+    promotedList || '  (none)',
     '',
     'EXISTING ATTRIBUTE KEYS already in use (prefer reusing):',
     `  leads:    ${formatKeys(leadKeysRes)}`,
