@@ -52,7 +52,7 @@ export function normalizeDate(input: unknown): string | null {
   if (typeof input === 'number') {
     const ms = input < 1e12 ? input * 1000 : input;
     const d = new Date(ms);
-    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    return finalizeDate(d);
   }
 
   if (typeof input !== 'string') return null;
@@ -61,20 +61,27 @@ export function normalizeDate(input: unknown): string | null {
 
   if (ISO_RE.test(s)) {
     const d = new Date(s.includes('T') ? s : s.replace(' ', 'T'));
-    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    return finalizeDate(d);
   }
 
   // DD.MM.YYYY [HH:mm[:ss]]
   const dotMatch = s.match(/^(\d{2})\.(\d{2})\.(\d{4})(?:\s+(\d{2}):(\d{2})(?::(\d{2}))?)?$/);
   if (dotMatch) {
     const [, dd, mm, yyyy, hh = '00', mi = '00', ss = '00'] = dotMatch;
-    return new Date(`${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}Z`).toISOString();
+    return finalizeDate(new Date(`${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}Z`));
   }
 
   // Fallback to Date constructor; reject obvious nonsense (it's permissive).
-  const d = new Date(s);
+  return finalizeDate(new Date(s));
+}
+
+/**
+ * Common tail for date parsing: rejects NaN and out-of-range years.
+ * Years before 2000 / after 2100 are almost always parse mistakes
+ * (typo'd 1234, two-digit-year ambiguity, etc.).
+ */
+function finalizeDate(d: Date): string | null {
   if (Number.isNaN(d.getTime())) return null;
-  // Reject years before 2000 / after 2100 — almost always a parse error.
   const year = d.getUTCFullYear();
   if (year < 2000 || year > 2100) return null;
   return d.toISOString();
