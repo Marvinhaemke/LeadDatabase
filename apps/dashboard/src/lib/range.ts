@@ -138,7 +138,8 @@ function addDays(d: Date, n: number): Date {
 
 function parseDate(s: string): Date | null {
   const d = new Date(`${s}T00:00:00Z`);
-  return Number.isNaN(d.getTime()) ? null : d;
+  if (Number.isNaN(d.getTime())) return null;
+  return isoDate(d) === s ? d : null;
 }
 
 /**

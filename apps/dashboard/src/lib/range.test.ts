@@ -36,6 +36,11 @@ describe('resolveRange', () => {
     expect(r.preset).toBe('30d');
   });
 
+  it('falls back to 30d on impossible custom dates', () => {
+    const r = resolveRange({ from: '2026-02-30', to: '2026-03-01' });
+    expect(r.preset).toBe('30d');
+  });
+
   it('falls back when range param is unknown', () => {
     const r = resolveRange({ range: 'forever' });
     expect(r.preset).toBe('30d');
