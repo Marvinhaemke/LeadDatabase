@@ -1,18 +1,8 @@
 import Link from 'next/link';
-import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
-import { getCurrentUser } from '@/lib/auth';
-import { SignOutButton } from '@/components/sign-out-button';
 import { createSupabaseServerClient } from 'db/server';
 
-export default async function AdminPage() {
-  const user = await getCurrentUser();
-  if (!user) redirect('/sign-in');
-  if (user.role !== 'admin') {
-    if (user.companySlug) redirect(`/${user.companySlug}`);
-    redirect('/awaiting-access');
-  }
-
+export default async function AdminCompaniesPage() {
   const cookieStore = await cookies();
   const client = createSupabaseServerClient(cookieStore);
   const { data: companies } = await client
@@ -31,18 +21,10 @@ export default async function AdminPage() {
   }>;
 
   return (
-    <main className="mx-auto max-w-4xl p-8">
-      <header className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">Admin</h1>
-          <p className="text-sm text-muted-foreground">
-            Pick a company to view its dashboard.
-          </p>
-        </div>
-        <div className="text-xs text-muted-foreground">
-          {user.email} <span className="mx-1">·</span> <SignOutButton />
-        </div>
-      </header>
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Pick a company to view its dashboard.
+      </p>
 
       {list.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
@@ -72,6 +54,6 @@ export default async function AdminPage() {
           ))}
         </ul>
       )}
-    </main>
+    </div>
   );
 }
