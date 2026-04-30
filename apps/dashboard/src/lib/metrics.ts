@@ -174,9 +174,9 @@ export async function getAdPerformance(
   companyId: string,
   limit = 200,
 ): Promise<AdPerformanceRow[]> {
-  // ad_performance is computed across all time. Date-windowed perf will
-  // come from a parameterised SQL function in a follow-up; for now the
-  // dashboard page exposes the all-time view.
+  // ad_performance is computed across all time. Use getAdPerformanceWindow
+  // when the dashboard supplies a date range — this is just the lifetime
+  // fallback.
   const { data } = await client
     .from('ad_performance')
     .select(
@@ -189,22 +189,117 @@ export async function getAdPerformance(
   return (data ?? []) as unknown as AdPerformanceRow[];
 }
 
-// ---------------------------------------------------------------------------
+/**
+ * Date-windowed ad performance. Aggregates `lead_events` (filtered by
+ * occurred_at) and `ad_metrics_daily` (filtered by date) per ad in JS,
+ * then joins against `ads` for names. Cheap enough at sales-funnel
+ * volume; for big accounts we'd push this into a SQL function.
+ */
+export async function getAdPerformanceWindow(
+  client: Client,
+  companyId: string,
+  from: Date,
+  to: Date,
+): Promise<AdPerformanceRow[]> {
+  const fromIso = from.toISOString();
+  const toIso = to.toISOString();
+  const fromDate = isoDate(from);
+  const toDate = isoDate(to);
 
-export function defaultRange(days = 30): { from: Date; to: Date; prevFrom: Date; prevTo: Date } {
-  const to = new Date();
-  to.setUTCHours(0, 0, 0, 0);
-  to.setUTCDate(to.getUTCDate() + 1); // include today
+  const [eventsRes, spendRes, adsRes] = await Promise.all([
+    client
+      .from('lead_events')
+      .select('lead_id, event_type, ad_id, amount')
+      .eq('company_id', companyId)
+      .gte('occurred_at', fromIso)
+      .lt('occurred_at', toIso)
+      .not('ad_id', 'is', null),
+    client
+      .from('ad_metrics_daily')
+      .select('ad_id, spend')
+      .eq('company_id', companyId)
+      .gte('date', fromDate)
+      .lt('date', toDate),
+    client.from('ads').select('id, name, ad_set_id').eq('company_id', companyId),
+  ]);
 
-  const from = new Date(to);
-  from.setUTCDate(from.getUTCDate() - days);
+  interface PerAd {
+    formLeads: Set<string>;
+    qualifiedLeads: Set<string>;
+    callsHeld: number;
+    wins: number;
+    revenue: number;
+  }
+  const perAd = new Map<string, PerAd>();
+  const ensure = (adId: string): PerAd => {
+    let v = perAd.get(adId);
+    if (!v) {
+      v = {
+        formLeads: new Set(),
+        qualifiedLeads: new Set(),
+        callsHeld: 0,
+        wins: 0,
+        revenue: 0,
+      };
+      perAd.set(adId, v);
+    }
+    return v;
+  };
 
-  const prevTo = new Date(from);
-  const prevFrom = new Date(from);
-  prevFrom.setUTCDate(prevFrom.getUTCDate() - days);
+  for (const e of (eventsRes.data ?? []) as Array<{
+    lead_id: string;
+    event_type: string;
+    ad_id: string | null;
+    amount: number | null;
+  }>) {
+    if (!e.ad_id) continue;
+    const acc = ensure(e.ad_id);
+    if (e.event_type === 'form_submitted') acc.formLeads.add(e.lead_id);
+    if (e.event_type === 'qualified') acc.qualifiedLeads.add(e.lead_id);
+    if (e.event_type === 'booking_held') acc.callsHeld += 1;
+    if (e.event_type === 'won') {
+      acc.wins += 1;
+      acc.revenue += Number(e.amount ?? 0);
+    }
+  }
 
-  return { from, to, prevFrom, prevTo };
+  const spendByAd = new Map<string, number>();
+  for (const s of (spendRes.data ?? []) as Array<{ ad_id: string; spend: number | null }>) {
+    spendByAd.set(s.ad_id, (spendByAd.get(s.ad_id) ?? 0) + Number(s.spend ?? 0));
+  }
+
+  const ads = (adsRes.data ?? []) as Array<{ id: string; name: string | null; ad_set_id: string }>;
+
+  const rows: AdPerformanceRow[] = ads.map((a) => {
+    const f = perAd.get(a.id);
+    const spend = spendByAd.get(a.id) ?? 0;
+    const leads = f?.formLeads.size ?? 0;
+    const qualifiedLeads = f?.qualifiedLeads.size ?? 0;
+    const callsHeld = f?.callsHeld ?? 0;
+    const wins = f?.wins ?? 0;
+    const revenue = f?.revenue ?? 0;
+    return {
+      ad_id: a.id,
+      ad_name: a.name,
+      spend,
+      leads,
+      qualified_leads: qualifiedLeads,
+      calls_held: callsHeld,
+      wins,
+      revenue,
+      roas: spend > 0 ? Number((revenue / spend).toFixed(4)) : null,
+      avg_revenue_per_lead: leads > 0 ? Number((revenue / leads).toFixed(2)) : null,
+      avg_purchase_amount: wins > 0 ? Number((revenue / wins).toFixed(2)) : null,
+    };
+  });
+
+  // Hide ads with zero activity in the window.
+  return rows
+    .filter((r) => r.spend > 0 || r.leads > 0 || r.calls_held > 0 || r.wins > 0)
+    .sort((a, b) => (b.spend || 0) - (a.spend || 0));
 }
+
+// ---------------------------------------------------------------------------
 
 export function deltaPct(current: number, previous: number): number | null {
   if (previous === 0) return current === 0 ? 0 : null;

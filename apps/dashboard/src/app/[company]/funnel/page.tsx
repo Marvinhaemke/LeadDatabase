@@ -1,6 +1,8 @@
 import { cookies } from 'next/headers';
 import { createSupabaseServerClient } from 'db/server';
-import { defaultRange, getFunnelDaily, getShowUpDaily } from '@/lib/metrics';
+import { getFunnelDaily, getShowUpDaily } from '@/lib/metrics';
+import { resolveRange } from '@/lib/range';
+import { DateRangePicker } from '@/components/date-range-picker';
 import {
   formatDate,
   formatMoney,
@@ -11,10 +13,13 @@ import {
 
 export default async function FunnelPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ company: string }>;
+  searchParams: Promise<{ range?: string; from?: string; to?: string }>;
 }) {
   const { company: slug } = await params;
+  const sp = await searchParams;
   const cookieStore = await cookies();
   const client = createSupabaseServerClient(cookieStore);
 
@@ -28,7 +33,9 @@ export default async function FunnelPage({
   const ctx = { id: company.id as string, currency: company.currency as string };
   const fmt = { currency: ctx.currency, locale: 'de-DE' };
 
-  const { from, to } = defaultRange(60);
+  // Funnel default is 90d so weekly trends are visible; user can narrow.
+  const range = resolveRange({ range: sp.range ?? '90d', from: sp.from, to: sp.to });
+  const { from, to } = range;
   const [daily, showUp] = await Promise.all([
     getFunnelDaily(client, ctx.id, from, to),
     getShowUpDaily(client, ctx.id, from, to),
@@ -38,14 +45,22 @@ export default async function FunnelPage({
 
   return (
     <div className="space-y-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Funnel — last 60 days</h1>
-        <p className="text-sm text-muted-foreground">
-          Each row is one calendar day. Show-up rate is bucketed by the
-          booking&apos;s scheduled date, not the lead&apos;s first-seen date —
-          so reschedule-after-no-show keeps the original no-show in the stats
-          (see <code>docs/funnel-semantics.md</code>).
-        </p>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold">Funnel — {range.label}</h1>
+            <p className="text-sm text-muted-foreground">
+              {range.fromIso} → {range.toIsoInclusive} · each row is one
+              calendar day. Show-up rate is bucketed by the booking&apos;s
+              scheduled date (see <code>docs/funnel-semantics.md</code>).
+            </p>
+          </div>
+          <DateRangePicker
+            preset={range.preset}
+            fromIso={range.fromIso}
+            toIsoInclusive={range.toIsoInclusive}
+          />
+        </div>
       </header>
 
       <div className="overflow-x-auto rounded-lg border border-border">

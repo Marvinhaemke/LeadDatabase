@@ -1,6 +1,8 @@
 import { cookies } from 'next/headers';
 import { createSupabaseServerClient } from 'db/server';
-import { getAdPerformance } from '@/lib/metrics';
+import { getAdPerformanceWindow } from '@/lib/metrics';
+import { resolveRange } from '@/lib/range';
+import { DateRangePicker } from '@/components/date-range-picker';
 import {
   formatMoney,
   formatNumber,
@@ -9,10 +11,13 @@ import {
 
 export default async function AdsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ company: string }>;
+  searchParams: Promise<{ range?: string; from?: string; to?: string }>;
 }) {
   const { company: slug } = await params;
+  const sp = await searchParams;
   const cookieStore = await cookies();
   const client = createSupabaseServerClient(cookieStore);
 
@@ -24,17 +29,27 @@ export default async function AdsPage({
   if (!company) return null;
 
   const fmt = { currency: company.currency as string, locale: 'de-DE' };
-  const rows = await getAdPerformance(client, company.id as string);
+  const range = resolveRange(sp);
+  const rows = await getAdPerformanceWindow(client, company.id as string, range.from, range.to);
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-semibold">Ad performance</h1>
-        <p className="text-sm text-muted-foreground">
-          Sorted by spend. All-time totals; date-windowed performance lands
-          in a follow-up. Attribution is via <code>fbclid</code> / utm
-          params on the landing page.
-        </p>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold">Ad performance — {range.label}</h1>
+            <p className="text-sm text-muted-foreground">
+              {range.fromIso} → {range.toIsoInclusive} · sorted by spend.
+              Attribution via <code>fbclid</code> / utm on the landing
+              page (see <code>/[company]/proposals</code> docs).
+            </p>
+          </div>
+          <DateRangePicker
+            preset={range.preset}
+            fromIso={range.fromIso}
+            toIsoInclusive={range.toIsoInclusive}
+          />
+        </div>
       </header>
 
       <div className="overflow-x-auto rounded-lg border border-border">
@@ -59,8 +74,8 @@ export default async function AdsPage({
                   colSpan={9}
                   className="px-3 py-8 text-center text-muted-foreground"
                 >
-                  No ad spend recorded yet. Connect Meta or send ad
-                  metrics via <code>/api/webhook/{slug}/meta</code>.
+                  No ad activity in this window. Try a wider range, or
+                  connect Meta if no ads have been synced yet.
                 </td>
               </tr>
             ) : (

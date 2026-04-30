@@ -1,12 +1,13 @@
 import { cookies } from 'next/headers';
 import { createSupabaseServerClient } from 'db/server';
 import { KpiCard } from '@/components/kpi-card';
+import { DateRangePicker } from '@/components/date-range-picker';
 import {
-  defaultRange,
   deltaPct,
   getFunnelTotals,
   getSpendTotals,
 } from '@/lib/metrics';
+import { resolveRange } from '@/lib/range';
 import {
   formatMoney,
   formatNumber,
@@ -23,10 +24,13 @@ interface CompanyContext {
 
 export default async function CompanyOverviewPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ company: string }>;
+  searchParams: Promise<{ range?: string; from?: string; to?: string }>;
 }) {
   const { company: slug } = await params;
+  const sp = await searchParams;
   const cookieStore = await cookies();
   const client = createSupabaseServerClient(cookieStore);
 
@@ -45,7 +49,8 @@ export default async function CompanyOverviewPage({
   };
   const fmt = { currency: ctx.currency, locale: ctx.locale };
 
-  const { from, to, prevFrom, prevTo } = defaultRange(30);
+  const range = resolveRange(sp);
+  const { from, to, prevFrom, prevTo } = range;
 
   const [current, prior, currentSpend, priorSpend] = await Promise.all([
     getFunnelTotals(client, ctx.id, from, to),
@@ -70,14 +75,21 @@ export default async function CompanyOverviewPage({
 
   return (
     <div className="space-y-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Last 30 days</h1>
-        <p className="text-sm text-muted-foreground">
-          Compared to the prior 30-day window. Numbers come from
-          <code className="mx-1 rounded bg-muted px-1">funnel_daily</code>
-          and
-          <code className="mx-1 rounded bg-muted px-1">ad_metrics_daily</code>.
-        </p>
+      <header className="space-y-3">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="text-2xl font-semibold">{range.label}</h1>
+            <p className="text-sm text-muted-foreground">
+              {range.fromIso} → {range.toIsoInclusive} · compared to the prior{' '}
+              {range.days}-day window
+            </p>
+          </div>
+          <DateRangePicker
+            preset={range.preset}
+            fromIso={range.fromIso}
+            toIsoInclusive={range.toIsoInclusive}
+          />
+        </div>
       </header>
 
       <section className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
