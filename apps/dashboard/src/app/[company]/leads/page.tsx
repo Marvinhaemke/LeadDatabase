@@ -22,19 +22,24 @@ export default async function LeadsPage({
 
   const { data: leads } = await client
     .from('leads')
-    .select('id, email, phone, first_name, last_name, source, created_at')
+    .select(
+      'id, email, phone, first_name, last_name, source, attributed_ad_id, attributed_via, created_at, ads:attributed_ad_id ( name, external_id )',
+    )
     .eq('company_id', company.id as string)
     .order('created_at', { ascending: false })
     .limit(100);
 
-  const list = (leads ?? []) as Array<{
+  const list = (leads ?? []) as unknown as Array<{
     id: string;
     email: string | null;
     phone: string | null;
     first_name: string | null;
     last_name: string | null;
     source: string | null;
+    attributed_ad_id: string | null;
+    attributed_via: string | null;
     created_at: string;
+    ads: { name: string | null; external_id: string } | { name: string | null; external_id: string }[] | null;
   }>;
 
   return (
@@ -42,7 +47,11 @@ export default async function LeadsPage({
       <header>
         <h1 className="text-2xl font-semibold">Leads</h1>
         <p className="text-sm text-muted-foreground">
-          Most recent 100. Drill-down to event timeline lands next.
+          Most recent 100. Attribution is resolved at form-submit time via{' '}
+          <code className="rounded bg-muted px-1">utm_content</code> →{' '}
+          <code className="rounded bg-muted px-1">ads.external_id</code> (or name).
+          A nightly cron retro-stamps any events that were ingested before
+          their lead's attribution arrived.
         </p>
       </header>
 
@@ -54,6 +63,7 @@ export default async function LeadsPage({
               <th className="px-3 py-2 text-left">Email</th>
               <th className="px-3 py-2 text-left">Phone</th>
               <th className="px-3 py-2 text-left">Source</th>
+              <th className="px-3 py-2 text-left">Attributed ad</th>
               <th className="px-3 py-2 text-right">Created</th>
             </tr>
           </thead>
@@ -61,28 +71,46 @@ export default async function LeadsPage({
             {list.length === 0 ? (
               <tr>
                 <td
-                  colSpan={5}
+                  colSpan={6}
                   className="px-3 py-8 text-center text-muted-foreground"
                 >
                   No leads yet.
                 </td>
               </tr>
             ) : (
-              list.map((l) => (
-                <tr key={l.id} className="border-t border-border">
-                  <td className="px-3 py-2">
-                    {[l.first_name, l.last_name].filter(Boolean).join(' ') || '—'}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-xs">{l.email ?? '—'}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{l.phone ?? '—'}</td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">
-                    {l.source ?? '—'}
-                  </td>
-                  <td className="px-3 py-2 text-right text-xs text-muted-foreground">
-                    {formatDateTime(l.created_at, fmt)}
-                  </td>
-                </tr>
-              ))
+              list.map((l) => {
+                const ad = Array.isArray(l.ads) ? l.ads[0] : l.ads;
+                return (
+                  <tr key={l.id} className="border-t border-border align-top">
+                    <td className="px-3 py-2">
+                      {[l.first_name, l.last_name].filter(Boolean).join(' ') || '—'}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-xs">{l.email ?? '—'}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{l.phone ?? '—'}</td>
+                    <td className="px-3 py-2 text-xs text-muted-foreground">
+                      {l.source ?? '—'}
+                    </td>
+                    <td className="px-3 py-2">
+                      {ad ? (
+                        <div>
+                          <div className="font-medium">{ad.name ?? '(unnamed)'}</div>
+                          <div className="text-xs text-muted-foreground">
+                            <code className="rounded bg-muted px-1">{ad.external_id}</code>
+                            {l.attributed_via && (
+                              <span className="ml-2">via {l.attributed_via}</span>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">unattributed</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-right text-xs text-muted-foreground">
+                      {formatDateTime(l.created_at, fmt)}
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

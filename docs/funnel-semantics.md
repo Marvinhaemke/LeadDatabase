@@ -119,11 +119,41 @@ strict cohort conversion.
 | avg_revenue_per_lead   | revenue / leads                                  |
 | avg_purchase_amount    | revenue / wins                                   |
 
-Attribution flows: at form submission, ingest captures `fbclid` / utm
-parameters into `lead_attribution`. The first matched ad becomes the
-lead's attributed ad and is denormalized onto subsequent `lead_events`
-via `ad_id`. If attribution is later corrected, only future events use
-the new ad — past events keep their ad_id (immutable).
+### Attribution flow
+
+1. **Capture**: at form submission, ingest writes a row into
+   `lead_attribution` with the raw `fbclid`, `utm_*` params, and
+   landing-page URL.
+2. **Match** (in the same ingest call):
+   `match_and_stamp_lead_attribution()` runs `resolve_ad_for_attribution`
+   which tries, in order:
+   1. `utm_content == ads.external_id` — strategy `utm_content_external_id`.
+   2. `utm_content == ads.name` (case-insensitive) — strategy
+      `utm_content_name`.
+   3. `utm_campaign == campaigns.external_id` or `.name` — strategy
+      `utm_campaign_only` (no ad_id picked; logged for QA).
+   4. `fbclid` present but unresolved — strategy `fbclid_unresolved`
+      (placeholder for a future Meta CAPI-based resolution).
+3. **Stamp the lead**: the first match wins. `leads.attributed_ad_id`
+   and `leads.attributed_via` are set once and never overwritten — "the
+   ad that brought them in" is canonical.
+4. **Stamp every event**: `apply.ts` reads `leads.attributed_ad_id`
+   before inserting events, so every `lead_events.ad_id` for that lead
+   is the same ad.
+5. **Backfill**: an hourly cron (`/api/cron/backfill-attribution`) calls
+   `backfill_lead_event_attribution()` to retro-stamp `lead_events.ad_id`
+   for events that were inserted before their lead's attribution
+   resolved (e.g. booking webhook arrived in parallel with the form
+   webhook, or `ads` rows hadn't synced yet).
+
+`lead_events` rows are still immutable beyond this single field: the
+backfill ONLY fills `ad_id` where it was NULL. We never overwrite an
+existing ad_id, so attribution corrections require ad-hoc SQL and
+leave a clear audit trail.
+
+To make attribution work, the landing page's CTA URLs need to carry
+`utm_content={{ad.id}}` (or the ad name) — Meta's URL parameters
+template handles this automatically once configured.
 
 ## Schema flexibility (JSONB → typed column promotion)
 

@@ -54,6 +54,10 @@ export interface AppliedChanges {
   eventIds: string[];
   proposalIds: string[];
   warnings: string[];
+  /** The ad_id stamped on lead_events for this run, if any. */
+  attributedAdId?: string;
+  /** Strategy that resolved the ad (e.g. 'utm_content_external_id'). */
+  attributedVia?: string;
 }
 
 export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
@@ -82,6 +86,10 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
   }
   out.leadId = lead.id;
 
+  // The lead may already carry an attributed ad from an earlier visit.
+  let attributedAdId: string | undefined = lead.attributed_ad_id ?? undefined;
+  let attributedVia: string | undefined = lead.attributed_via ?? undefined;
+
   // ------------------------------------------------------------------
   // 2. Booking (with reschedule chain)
   // ------------------------------------------------------------------
@@ -109,7 +117,28 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
   }
 
   // ------------------------------------------------------------------
-  // 4. Events (append-only)
+  // 4. Attribution — run BEFORE events so events get the ad_id stamp.
+  // ------------------------------------------------------------------
+  if (plan.attribution && hasAnyAttribution(plan.attribution)) {
+    const matched = await insertAttribution(
+      client,
+      companyId,
+      lead.id,
+      plan.attribution,
+    );
+    if (matched.adId && !attributedAdId) {
+      attributedAdId = matched.adId;
+      attributedVia = matched.strategy ?? attributedVia;
+    }
+  }
+
+  if (attributedAdId) {
+    out.attributedAdId = attributedAdId;
+    out.attributedVia = attributedVia;
+  }
+
+  // ------------------------------------------------------------------
+  // 5. Events (append-only)
   // ------------------------------------------------------------------
   if (plan.events.length > 0) {
     const ids = await insertEvents(
@@ -117,17 +146,14 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
       companyId,
       lead.id,
       plan.events,
-      { bookingId: out.bookingId, dealId: out.dealId },
+      {
+        bookingId: out.bookingId,
+        dealId: out.dealId,
+        adId: attributedAdId,
+      },
       source,
     );
     out.eventIds.push(...ids);
-  }
-
-  // ------------------------------------------------------------------
-  // 5. Attribution
-  // ------------------------------------------------------------------
-  if (plan.attribution && hasAnyAttribution(plan.attribution)) {
-    await insertAttribution(client, companyId, lead.id, plan.attribution);
   }
 
   // ------------------------------------------------------------------
@@ -145,6 +171,12 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
 // Lead upsert
 // =====================================================================
 
+interface UpsertedLead {
+  id: string;
+  attributed_ad_id: string | null;
+  attributed_via: string | null;
+}
+
 async function upsertLead(
   client: Client,
   companyId: string,
@@ -152,7 +184,7 @@ async function upsertLead(
   source: string,
   defaultCountry: string | undefined,
   warnings: string[],
-): Promise<{ id: string } | null> {
+): Promise<UpsertedLead | null> {
   const rawEmail = plan.lead_typed.email ?? plan.lead_identity.email;
   const rawPhone = plan.lead_typed.phone ?? plan.lead_identity.phone;
   const email = normalizeEmail(rawEmail);
@@ -180,7 +212,11 @@ async function upsertLead(
       .eq('id', existing.id)
       .eq('company_id', companyId);
     if (error) throw new Error(`lead update failed: ${error.message}`);
-    return { id: existing.id };
+    return {
+      id: existing.id,
+      attributed_ad_id: existing.attributed_ad_id ?? null,
+      attributed_via: existing.attributed_via ?? null,
+    };
   }
 
   const { data, error } = await client
@@ -189,7 +225,7 @@ async function upsertLead(
     .select('id')
     .single();
   if (error) throw new Error(`lead insert failed: ${error.message}`);
-  return { id: data.id };
+  return { id: data.id, attributed_ad_id: null, attributed_via: null };
 }
 
 interface ExistingLead {
@@ -200,6 +236,8 @@ interface ExistingLead {
   last_name: string | null;
   source: string | null;
   attributes: Json;
+  attributed_ad_id: string | null;
+  attributed_via: string | null;
 }
 
 async function findLead(
@@ -208,7 +246,8 @@ async function findLead(
   email: string | null,
   phone: string | null,
 ): Promise<ExistingLead | null> {
-  const select = 'id,email,phone,first_name,last_name,source,attributes';
+  const select =
+    'id,email,phone,first_name,last_name,source,attributes,attributed_ad_id,attributed_via';
   if (email) {
     const { data } = await client
       .from('leads')
@@ -449,7 +488,7 @@ async function insertEvents(
   companyId: string,
   leadId: string,
   events: LeadEventInput[],
-  refs: { bookingId?: string; dealId?: string },
+  refs: { bookingId?: string; dealId?: string; adId?: string },
   source: string,
 ): Promise<string[]> {
   const rows = events.map((e) => ({
@@ -460,6 +499,7 @@ async function insertEvents(
     occurred_at: e.occurred_at ? (normalizeDate(e.occurred_at) ?? new Date().toISOString()) : new Date().toISOString(),
     booking_id: refs.bookingId ?? null,
     deal_id: refs.dealId ?? null,
+    ad_id: refs.adId ?? null,
     amount: e.amount != null ? normalizeMoney(e.amount) : null,
     currency: normalizeCurrency(e.currency ?? null),
     attributes: e.attributes as Json,
@@ -488,24 +528,51 @@ function hasAnyAttribution(a: AttributionInput): boolean {
   );
 }
 
+interface AttributionResult {
+  attributionId?: string;
+  adId?: string;
+  strategy?: string;
+}
+
 async function insertAttribution(
   client: Client,
   companyId: string,
   leadId: string,
   attr: AttributionInput,
-): Promise<void> {
-  await client.from('lead_attribution').insert({
-    company_id: companyId,
-    lead_id: leadId,
-    fbclid: attr.fbclid ?? null,
-    utm_source: attr.utm_source ?? null,
-    utm_medium: attr.utm_medium ?? null,
-    utm_campaign: attr.utm_campaign ?? null,
-    utm_content: attr.utm_content ?? null,
-    utm_term: attr.utm_term ?? null,
-    landing_url: attr.landing_url ?? null,
-    referrer_url: attr.referrer_url ?? null,
+): Promise<AttributionResult> {
+  const { data: inserted, error } = await client
+    .from('lead_attribution')
+    .insert({
+      company_id: companyId,
+      lead_id: leadId,
+      fbclid: attr.fbclid ?? null,
+      utm_source: attr.utm_source ?? null,
+      utm_medium: attr.utm_medium ?? null,
+      utm_campaign: attr.utm_campaign ?? null,
+      utm_content: attr.utm_content ?? null,
+      utm_term: attr.utm_term ?? null,
+      landing_url: attr.landing_url ?? null,
+      referrer_url: attr.referrer_url ?? null,
+    })
+    .select('id')
+    .single();
+
+  if (error || !inserted) return {};
+
+  // Run the SQL match. Idempotent and side-effect-bounded: only updates
+  // the attribution row + (first time only) the lead's attributed_ad_id.
+  const { data: matched } = await client.rpc('match_and_stamp_lead_attribution', {
+    p_attribution_id: inserted.id,
   });
+  const row = (matched?.[0] ?? null) as
+    | { matched_ad_id: string | null; strategy: string | null }
+    | null;
+
+  return {
+    attributionId: inserted.id,
+    adId: row?.matched_ad_id ?? undefined,
+    strategy: row?.strategy ?? undefined,
+  };
 }
 
 // =====================================================================
