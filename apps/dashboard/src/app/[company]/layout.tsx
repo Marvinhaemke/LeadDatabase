@@ -39,6 +39,7 @@ export default async function CompanyLayout({
     { href: `/${slug}/ads`, label: 'Ads' },
     { href: `/${slug}/leads`, label: 'Leads' },
     { href: `/${slug}/proposals`, label: 'Field proposals' },
+    { href: `/${slug}/inbox`, label: 'Webhook inbox' },
   ];
 
   return (
