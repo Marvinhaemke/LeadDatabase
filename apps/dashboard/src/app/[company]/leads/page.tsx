@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { cookies } from 'next/headers';
 import { createSupabaseServerClient } from 'db/server';
 import { formatDateTime } from '@/lib/format';
@@ -81,11 +82,20 @@ export default async function LeadsPage({
               list.map((l) => {
                 const ad = Array.isArray(l.ads) ? l.ads[0] : l.ads;
                 return (
-                  <tr key={l.id} className="border-t border-border align-top">
+                  <tr key={l.id} className="border-t border-border align-top hover:bg-muted/30">
                     <td className="px-3 py-2">
-                      {[l.first_name, l.last_name].filter(Boolean).join(' ') || '—'}
+                      <Link
+                        href={`/${slug}/leads/${l.id}`}
+                        className="hover:underline"
+                      >
+                        {[l.first_name, l.last_name].filter(Boolean).join(' ') || '—'}
+                      </Link>
                     </td>
-                    <td className="px-3 py-2 font-mono text-xs">{l.email ?? '—'}</td>
+                    <td className="px-3 py-2 font-mono text-xs">
+                      <Link href={`/${slug}/leads/${l.id}`} className="hover:underline">
+                        {l.email ?? '—'}
+                      </Link>
+                    </td>
                     <td className="px-3 py-2 font-mono text-xs">{l.phone ?? '—'}</td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">
                       {l.source ?? '—'}
