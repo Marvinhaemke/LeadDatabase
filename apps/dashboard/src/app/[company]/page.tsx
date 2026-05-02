@@ -4,6 +4,7 @@ import { KpiCard } from '@/components/kpi-card';
 import { DateRangePicker } from '@/components/date-range-picker';
 import {
   deltaPct,
+  getFunnelDaily,
   getFunnelTotals,
   getSpendTotals,
 } from '@/lib/metrics';
@@ -52,12 +53,17 @@ export default async function CompanyOverviewPage({
   const range = resolveRange(sp);
   const { from, to, prevFrom, prevTo } = range;
 
-  const [current, prior, currentSpend, priorSpend] = await Promise.all([
+  const [current, prior, currentSpend, priorSpend, daily] = await Promise.all([
     getFunnelTotals(client, ctx.id, from, to),
     getFunnelTotals(client, ctx.id, prevFrom, prevTo),
     getSpendTotals(client, ctx.id, from, to),
     getSpendTotals(client, ctx.id, prevFrom, prevTo),
+    getFunnelDaily(client, ctx.id, from, to),
   ]);
+
+  // Build per-KPI sparkline series, padded with zeroes for days that have
+  // no events so the X axis is the full window not just the active days.
+  const sparks = buildSparks(daily, range.from, range.to);
 
   const showUp = safeDivide(
     current.bookings_held,
@@ -97,18 +103,21 @@ export default async function CompanyOverviewPage({
           label="Form submissions"
           value={formatNumber(current.form_submissions, fmt)}
           delta={deltaBadge(deltaPct(current.form_submissions, prior.form_submissions))}
+          spark={sparks.form_submissions}
         />
         <KpiCard
           label="Bookings created"
           value={formatNumber(current.bookings_created, fmt)}
           delta={deltaBadge(deltaPct(current.bookings_created, prior.bookings_created))}
           hint={`form → booking ${formatPercent(safeDivide(current.bookings_created, current.form_submissions))}`}
+          spark={sparks.bookings_created}
         />
         <KpiCard
           label="Calls held"
           value={formatNumber(current.bookings_held, fmt)}
           delta={deltaBadge(deltaPct(current.bookings_held, prior.bookings_held))}
           hint={`no-shows ${formatNumber(current.bookings_no_show, fmt)}`}
+          spark={sparks.bookings_held}
         />
         <KpiCard
           label="Show-up rate"
@@ -121,18 +130,21 @@ export default async function CompanyOverviewPage({
           label="Qualified"
           value={formatNumber(current.qualified, fmt)}
           delta={deltaBadge(deltaPct(current.qualified, prior.qualified))}
+          spark={sparks.qualified}
         />
         <KpiCard
           label="Wins"
           value={formatNumber(current.wins, fmt)}
           delta={deltaBadge(deltaPct(current.wins, prior.wins))}
           hint={`held → won ${formatPercent(heldToWon)}`}
+          spark={sparks.wins}
         />
         <KpiCard
           label="Revenue"
           value={formatMoney(current.revenue, fmt)}
           delta={deltaBadge(deltaPct(current.revenue, prior.revenue))}
           hint={`form → won ${formatPercent(formToWon)}`}
+          spark={sparks.revenue}
         />
         <KpiCard
           label="ROAS"
@@ -263,7 +275,7 @@ function PriorPeriodTable({
   return (
     <div className="rounded-lg border border-border">
       <div className="border-b border-border bg-muted/30 px-4 py-2 text-sm font-medium">
-        vs prior 30 days
+        vs prior period
       </div>
       <table className="w-full text-sm">
         <thead className="text-xs text-muted-foreground">
@@ -287,4 +299,56 @@ function PriorPeriodTable({
       </table>
     </div>
   );
+}
+
+/**
+ * Build per-KPI daily arrays padded with zeroes for missing days, ordered
+ * chronologically from `from` to `to` (exclusive). Sparklines need a
+ * dense series so the X axis is the full window not just the active days.
+ */
+function buildSparks(
+  daily: Array<{
+    day: string;
+    form_submissions: number;
+    bookings_created: number;
+    bookings_held: number;
+    qualified: number;
+    wins: number;
+    revenue: number;
+  }>,
+  from: Date,
+  to: Date,
+): {
+  form_submissions: number[];
+  bookings_created: number[];
+  bookings_held: number[];
+  qualified: number[];
+  wins: number[];
+  revenue: number[];
+} {
+  const byDay = new Map(daily.map((d) => [d.day, d]));
+  const days: string[] = [];
+  const cursor = new Date(from);
+  while (cursor.getTime() < to.getTime()) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  const out = {
+    form_submissions: [] as number[],
+    bookings_created: [] as number[],
+    bookings_held: [] as number[],
+    qualified: [] as number[],
+    wins: [] as number[],
+    revenue: [] as number[],
+  };
+  for (const d of days) {
+    const row = byDay.get(d);
+    out.form_submissions.push(Number(row?.form_submissions ?? 0));
+    out.bookings_created.push(Number(row?.bookings_created ?? 0));
+    out.bookings_held.push(Number(row?.bookings_held ?? 0));
+    out.qualified.push(Number(row?.qualified ?? 0));
+    out.wins.push(Number(row?.wins ?? 0));
+    out.revenue.push(Number(row?.revenue ?? 0));
+  }
+  return out;
 }

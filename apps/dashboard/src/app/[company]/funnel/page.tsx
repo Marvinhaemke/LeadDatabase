@@ -3,6 +3,7 @@ import { createSupabaseServerClient } from 'db/server';
 import { getFunnelDaily, getShowUpDaily } from '@/lib/metrics';
 import { resolveRange } from '@/lib/range';
 import { DateRangePicker } from '@/components/date-range-picker';
+import { LineChart } from '@/components/line-chart';
 import {
   formatDate,
   formatMoney,
@@ -43,6 +44,17 @@ export default async function FunnelPage({
 
   const showUpByDay = new Map(showUp.map((r) => [r.day, r]));
 
+  // Chart series: ascend so the line flows left → right.
+  const chartData = [...daily]
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .map((d) => ({
+      day: d.day,
+      form_submissions: Number(d.form_submissions ?? 0),
+      bookings_created: Number(d.bookings_created ?? 0),
+      bookings_held: Number(d.bookings_held ?? 0),
+      wins: Number(d.wins ?? 0),
+    }));
+
   return (
     <div className="space-y-8">
       <header className="space-y-3">
@@ -62,6 +74,16 @@ export default async function FunnelPage({
           />
         </div>
       </header>
+
+      <LineChart
+        data={chartData}
+        series={[
+          { key: 'form_submissions', label: 'Form submissions', color: 'hsl(220 70% 55%)' },
+          { key: 'bookings_created', label: 'Bookings', color: 'hsl(280 60% 55%)' },
+          { key: 'bookings_held', label: 'Calls held', color: 'hsl(160 60% 40%)' },
+          { key: 'wins', label: 'Wins', color: 'hsl(35 90% 50%)' },
+        ]}
+      />
 
       <div className="overflow-x-auto rounded-lg border border-border">
         <table className="w-full text-sm">

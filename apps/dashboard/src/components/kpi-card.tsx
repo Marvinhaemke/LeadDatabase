@@ -1,14 +1,18 @@
 import { cn } from '@/lib/utils';
+import { Sparkline } from './sparkline';
 
 interface KpiCardProps {
   label: string;
   value: string;
   hint?: string;
   delta?: { value: string; positive?: boolean } | null;
+  /** Daily values, ordered chronologically. Renders a sparkline if present. */
+  spark?: number[];
   className?: string;
 }
 
-export function KpiCard({ label, value, hint, delta, className }: KpiCardProps) {
+export function KpiCard({ label, value, hint, delta, spark, className }: KpiCardProps) {
+  const sparkColor = delta?.positive === false ? 'hsl(0 70% 45%)' : 'hsl(160 60% 35%)';
   return (
     <div
       className={cn(
@@ -16,8 +20,13 @@ export function KpiCard({ label, value, hint, delta, className }: KpiCardProps) 
         className,
       )}
     >
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          {label}
+        </div>
+        {spark && spark.length > 1 && (
+          <Sparkline values={spark} width={80} height={20} color={sparkColor} />
+        )}
       </div>
       <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
       {(hint || delta) && (
