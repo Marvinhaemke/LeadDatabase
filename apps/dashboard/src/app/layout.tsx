@@ -8,8 +8,14 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen antialiased">{children}</body>
+    <html lang="en" suppressHydrationWarning>
+      {/* suppressHydrationWarning shields against browser extensions
+          (Grammarly, password managers, dark-mode plugins) that inject
+          attributes on <body> after first paint and would otherwise
+          trip React's hydration check. */}
+      <body className="min-h-screen antialiased" suppressHydrationWarning>
+        {children}
+      </body>
     </html>
   );
 }
