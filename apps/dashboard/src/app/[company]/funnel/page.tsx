@@ -1,16 +1,14 @@
 import { cookies } from 'next/headers';
 import { createSupabaseServerClient } from 'db/server';
-import { getFunnelDaily, getShowUpDaily } from '@/lib/metrics';
+import { getShowUpDaily } from '@/lib/metrics';
+import {
+  getObservedFunnel,
+  getObservedFunnelDaily,
+} from '@/lib/funnels';
 import { resolveRange } from '@/lib/range';
 import { DateRangePicker } from '@/components/date-range-picker';
 import { LineChart } from '@/components/line-chart';
-import {
-  formatDate,
-  formatMoney,
-  formatNumber,
-  formatPercent,
-  safeDivide,
-} from '@/lib/format';
+import { formatDate, formatNumber, formatPercent } from '@/lib/format';
 
 export default async function FunnelPage({
   params,
@@ -34,26 +32,33 @@ export default async function FunnelPage({
   const ctx = { id: company.id as string, currency: company.currency as string };
   const fmt = { currency: ctx.currency, locale: 'de-DE' };
 
-  // Funnel default is 90d so weekly trends are visible; user can narrow.
+  // Funnel default is 90d so weekly trends are visible.
   const range = resolveRange({ range: sp.range ?? '90d', from: sp.from, to: sp.to });
   const { from, to } = range;
-  const [daily, showUp] = await Promise.all([
-    getFunnelDaily(client, ctx.id, from, to),
+
+  const [funnel, showUp] = await Promise.all([
+    getObservedFunnel(client, ctx.id, from, to),
     getShowUpDaily(client, ctx.id, from, to),
   ]);
 
-  const showUpByDay = new Map(showUp.map((r) => [r.day, r]));
+  // Chart series: visible canonical stages.
+  const seriesTypes = funnel.stages.map((s) => s.type);
+  const dailyRows =
+    seriesTypes.length === 0
+      ? []
+      : await getObservedFunnelDaily(client, ctx.id, seriesTypes, from, to);
 
-  // Chart series: ascend so the line flows left → right.
-  const chartData = [...daily]
-    .sort((a, b) => a.day.localeCompare(b.day))
-    .map((d) => ({
-      day: d.day,
-      form_submissions: Number(d.form_submissions ?? 0),
-      bookings_created: Number(d.bookings_created ?? 0),
-      bookings_held: Number(d.bookings_held ?? 0),
-      wins: Number(d.wins ?? 0),
-    }));
+  const chartSeries = funnel.stages.map((s) => ({
+    key: s.type,
+    label: s.label,
+    color: s.color,
+  }));
+
+  // Day-bucketed table — joins funnel daily with show_up_rate_daily.
+  const showUpByDay = new Map(showUp.map((r) => [r.day, r]));
+  const tableRows = [...dailyRows].sort((a, b) =>
+    String(b.day).localeCompare(String(a.day)),
+  );
 
   return (
     <div className="space-y-8">
@@ -62,9 +67,9 @@ export default async function FunnelPage({
           <div>
             <h1 className="text-2xl font-semibold">Funnel — {range.label}</h1>
             <p className="text-sm text-muted-foreground">
-              {range.fromIso} → {range.toIsoInclusive} · each row is one
-              calendar day. Show-up rate is bucketed by the booking&apos;s
-              scheduled date (see <code>docs/funnel-semantics.md</code>).
+              {range.fromIso} → {range.toIsoInclusive} · shape discovered
+              from <code className="rounded bg-muted px-1">lead_events</code>{' '}
+              in this window.
             </p>
           </div>
           <DateRangePicker
@@ -75,90 +80,127 @@ export default async function FunnelPage({
         </div>
       </header>
 
-      <LineChart
-        data={chartData}
-        series={[
-          { key: 'form_submissions', label: 'Form submissions', color: 'hsl(220 70% 55%)' },
-          { key: 'bookings_created', label: 'Bookings', color: 'hsl(280 60% 55%)' },
-          { key: 'bookings_held', label: 'Calls held', color: 'hsl(160 60% 40%)' },
-          { key: 'wins', label: 'Wins', color: 'hsl(35 90% 50%)' },
-        ]}
-      />
+      {funnel.stages.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
+          No funnel events recorded in this window yet. Send a webhook to
+          <code className="mx-1 rounded bg-muted px-1">
+            /api/webhook/{slug}/zapier
+          </code>
+          or widen the date range.
+        </div>
+      ) : (
+        <>
+          <LineChart data={dailyRows as Array<Record<string, string | number> & { day: string }>}
+            series={chartSeries}
+          />
 
-      <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full text-sm">
-          <thead className="bg-muted/30 text-xs text-muted-foreground">
-            <tr>
-              <th className="px-3 py-2 text-left">Day</th>
-              <th className="px-3 py-2 text-right">Forms</th>
-              <th className="px-3 py-2 text-right">Booked</th>
-              <th className="px-3 py-2 text-right">Held</th>
-              <th className="px-3 py-2 text-right">No-show</th>
-              <th className="px-3 py-2 text-right">Show-up</th>
-              <th className="px-3 py-2 text-right">Qualified</th>
-              <th className="px-3 py-2 text-right">Wins</th>
-              <th className="px-3 py-2 text-right">Revenue</th>
-              <th className="px-3 py-2 text-right">Form→Booked</th>
-              <th className="px-3 py-2 text-right">Form→Won</th>
-            </tr>
-          </thead>
-          <tbody>
-            {daily.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={11}
-                  className="px-3 py-8 text-center text-muted-foreground"
-                >
-                  No funnel events in this window yet.
-                </td>
-              </tr>
-            ) : (
-              daily.map((row) => {
-                const su = showUpByDay.get(row.day);
-                return (
-                  <tr key={row.day} className="border-t border-border">
-                    <td className="px-3 py-2">{formatDate(row.day, fmt)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatNumber(row.form_submissions, fmt)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatNumber(row.bookings_created, fmt)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatNumber(row.bookings_held, fmt)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatNumber(row.bookings_no_show, fmt)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {su ? formatPercent(su.show_up_rate) : '—'}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatNumber(row.qualified, fmt)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatNumber(row.wins, fmt)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {formatMoney(row.revenue, fmt)}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                      {formatPercent(
-                        safeDivide(row.bookings_created, row.form_submissions),
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
-                      {formatPercent(
-                        safeDivide(row.wins, row.form_submissions),
-                      )}
-                    </td>
+          <section className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {funnel.stages.map((s) => (
+              <div key={s.type} className="rounded-lg border border-border p-4">
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-block h-2 w-3 rounded-sm"
+                    style={{ background: s.color }}
+                  />
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">
+                    {s.label}
+                  </div>
+                </div>
+                <div className="mt-2 text-2xl font-semibold tabular-nums">
+                  {formatNumber(s.count, fmt)}
+                </div>
+                {s.stepRate != null && (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {formatPercent(s.stepRate)} of previous stage
+                  </div>
+                )}
+              </div>
+            ))}
+          </section>
+
+          {funnel.extras.length > 0 && (
+            <section>
+              <h2 className="text-base font-semibold">Other events observed</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Events outside the canonical forward funnel (no-shows,
+                disqualifications, custom event types).
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {funnel.extras.map((s) => (
+                  <span
+                    key={s.type}
+                    className="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1 text-xs"
+                  >
+                    <span
+                      className="inline-block h-2 w-2 rounded-full"
+                      style={{ background: s.color }}
+                    />
+                    <span className="font-mono">{s.type}</span>
+                    <span className="tabular-nums">{formatNumber(s.count, fmt)}</span>
+                  </span>
+                ))}
+              </div>
+            </section>
+          )}
+
+          <section>
+            <h2 className="text-base font-semibold">Daily breakdown</h2>
+            <div className="mt-3 overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/30 text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Day</th>
+                    {funnel.stages.map((s) => (
+                      <th
+                        key={s.type}
+                        className="px-3 py-2 text-right whitespace-nowrap"
+                      >
+                        {s.label}
+                      </th>
+                    ))}
+                    <th className="px-3 py-2 text-right">Show-up</th>
                   </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
+                </thead>
+                <tbody>
+                  {tableRows.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={funnel.stages.length + 2}
+                        className="px-3 py-6 text-center text-muted-foreground"
+                      >
+                        No daily breakdown for this window.
+                      </td>
+                    </tr>
+                  ) : (
+                    tableRows.map((row) => {
+                      const day = String(row.day);
+                      const su = showUpByDay.get(day);
+                      return (
+                        <tr key={day} className="border-t border-border">
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {formatDate(day, fmt)}
+                          </td>
+                          {funnel.stages.map((s) => (
+                            <td
+                              key={s.type}
+                              className="px-3 py-2 text-right tabular-nums"
+                            >
+                              {formatNumber(Number(row[s.type] ?? 0), fmt)}
+                            </td>
+                          ))}
+                          <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+                            {su ? formatPercent(su.show_up_rate) : '—'}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }
