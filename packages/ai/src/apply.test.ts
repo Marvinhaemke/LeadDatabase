@@ -343,6 +343,130 @@ describe('applyPlan / event attribution', () => {
 });
 
 // -----------------------------------------------------------------------------
+// Multi-funnel: funnel_key stamping
+// -----------------------------------------------------------------------------
+
+describe('applyPlan / funnel_key', () => {
+  it('derives funnel_key=meta when fbclid is present', async () => {
+    const c = makeFakeClient();
+    await applyPlan(
+      baseArgs(c, {
+        action: 'apply',
+        lead_identity: { email: 'jane@example.com' },
+        attribution: { fbclid: 'IwAR...' },
+        events: [{ type: 'form_submitted' }],
+      }),
+    );
+    const events = c.tableRows('lead_events') as Array<{ funnel_key: string | null }>;
+    expect(events[0]!.funnel_key).toBe('meta');
+  });
+
+  it('uses utm_source lowercased when fbclid is absent', async () => {
+    const c = makeFakeClient();
+    await applyPlan(
+      baseArgs(c, {
+        action: 'apply',
+        lead_identity: { email: 'jane@example.com' },
+        attribution: { utm_source: 'Newsletter' },
+        events: [{ type: 'form_submitted' }],
+      }),
+    );
+    const events = c.tableRows('lead_events') as Array<{ funnel_key: string | null }>;
+    expect(events[0]!.funnel_key).toBe('newsletter');
+  });
+
+  it("falls back to the lead's most-recent prior attribution when this webhook carries none", async () => {
+    const c = makeFakeClient();
+    c.seed('leads', [
+      {
+        id: 'lead-1',
+        company_id: COMPANY,
+        email: 'jane@example.com',
+        attributes: {},
+        attributed_ad_id: null,
+        attributed_via: null,
+      },
+    ]);
+    c.seed('lead_attribution', [
+      {
+        id: 'attr-1',
+        company_id: COMPANY,
+        lead_id: 'lead-1',
+        fbclid: null,
+        utm_source: 'meta',
+        captured_at: '2026-04-01T10:00:00Z',
+      },
+    ]);
+
+    await applyPlan(
+      baseArgs(c, {
+        action: 'apply',
+        lead_identity: { email: 'jane@example.com' },
+        // no attribution on this webhook (e.g. a booking-created event)
+        events: [{ type: 'booking_held' }],
+      }),
+    );
+
+    const events = c.tableRows('lead_events') as Array<{ funnel_key: string | null }>;
+    expect(events[0]!.funnel_key).toBe('meta');
+  });
+
+  it('new attribution with a different source overrides for THIS run, preserving past events', async () => {
+    // Past events stay tagged 'meta'; this run's events get tagged 'email'.
+    const c = makeFakeClient();
+    c.seed('leads', [
+      {
+        id: 'lead-1',
+        company_id: COMPANY,
+        email: 'jane@example.com',
+        attributes: {},
+        attributed_ad_id: null,
+        attributed_via: null,
+      },
+    ]);
+    c.seed('lead_attribution', [
+      {
+        id: 'attr-1',
+        company_id: COMPANY,
+        lead_id: 'lead-1',
+        utm_source: 'meta',
+        captured_at: '2026-04-01T10:00:00Z',
+      },
+    ]);
+    c.seed('lead_events', [
+      {
+        id: 'ev-old',
+        company_id: COMPANY,
+        lead_id: 'lead-1',
+        event_type: 'form_submitted',
+        occurred_at: '2026-04-01T10:00:00Z',
+        funnel_key: 'meta',
+      },
+    ]);
+
+    await applyPlan(
+      baseArgs(c, {
+        action: 'apply',
+        lead_identity: { email: 'jane@example.com' },
+        attribution: { utm_source: 'email' },
+        events: [{ type: 'form_submitted' }, { type: 'won', amount: 5000, currency: 'EUR' }],
+      }),
+    );
+
+    const events = c.tableRows('lead_events') as Array<{
+      id: string;
+      funnel_key: string | null;
+      event_type: string;
+    }>;
+    const oldEvent = events.find((e) => e.id === 'ev-old')!;
+    const newEvents = events.filter((e) => e.id !== 'ev-old');
+    expect(oldEvent.funnel_key).toBe('meta');
+    expect(newEvents).toHaveLength(2);
+    for (const e of newEvents) expect(e.funnel_key).toBe('email');
+  });
+});
+
+// -----------------------------------------------------------------------------
 // Field proposals
 // -----------------------------------------------------------------------------
 

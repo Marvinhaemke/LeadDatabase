@@ -4,6 +4,8 @@ import { getShowUpDaily } from '@/lib/metrics';
 import {
   getObservedFunnel,
   getObservedFunnelDaily,
+  getObservedFunnelsBySource,
+  type ObservedStage,
 } from '@/lib/funnels';
 import { resolveRange } from '@/lib/range';
 import { DateRangePicker } from '@/components/date-range-picker';
@@ -36,9 +38,10 @@ export default async function FunnelPage({
   const range = resolveRange({ range: sp.range ?? '90d', from: sp.from, to: sp.to });
   const { from, to } = range;
 
-  const [funnel, showUp] = await Promise.all([
+  const [funnel, showUp, perSource] = await Promise.all([
     getObservedFunnel(client, ctx.id, from, to),
     getShowUpDaily(client, ctx.id, from, to),
+    getObservedFunnelsBySource(client, ctx.id, from, to),
   ]);
 
   // Chart series: visible canonical stages.
@@ -143,6 +146,65 @@ export default async function FunnelPage({
             </section>
           )}
 
+          {perSource.length > 1 && (
+            <section className="space-y-4">
+              <div>
+                <h2 className="text-base font-semibold">By acquisition source</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Each event carries the funnel that was active when it
+                  occurred (derived from{' '}
+                  <code className="rounded bg-muted px-1">utm_source</code> /{' '}
+                  <code className="rounded bg-muted px-1">fbclid</code>). A
+                  lead who enters via one funnel, drops out, and re-engages
+                  via another appears in BOTH numbers — in the right stages.
+                </p>
+              </div>
+              {perSource.map((group) => (
+                <div key={group.key} className="rounded-lg border border-border p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h3 className="text-sm font-semibold">
+                      {group.label}
+                      {group.key !== '__unattributed__' && (
+                        <code className="ml-2 rounded bg-muted px-1 text-xs font-normal">
+                          funnel_key = {group.key}
+                        </code>
+                      )}
+                    </h3>
+                    <span className="text-xs text-muted-foreground">
+                      {formatNumber(group.totalEvents, fmt)} events
+                    </span>
+                  </div>
+                  {group.funnel.stages.length === 0 ? (
+                    <div className="text-xs text-muted-foreground">
+                      Only non-canonical events in this source.
+                    </div>
+                  ) : (
+                    <StageStrip stages={group.funnel.stages} fmt={fmt} />
+                  )}
+                  {group.funnel.extras.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">
+                      {group.funnel.extras.map((s) => (
+                        <span
+                          key={s.type}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px]"
+                        >
+                          <span
+                            className="inline-block h-1.5 w-1.5 rounded-full"
+                            style={{ background: s.color }}
+                          />
+                          <span className="font-mono">{s.type}</span>
+                          <span className="tabular-nums">
+                            {formatNumber(s.count, fmt)}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </section>
+          )}
+
           <section>
             <h2 className="text-base font-semibold">Daily breakdown</h2>
             <div className="mt-3 overflow-x-auto rounded-lg border border-border">
@@ -201,6 +263,40 @@ export default async function FunnelPage({
           </section>
         </>
       )}
+    </div>
+  );
+}
+
+function StageStrip({
+  stages,
+  fmt,
+}: {
+  stages: ObservedStage[];
+  fmt: { currency: string; locale: string };
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-6">
+      {stages.map((s) => (
+        <div key={s.type} className="rounded-md border border-border bg-muted/20 p-2">
+          <div className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-1.5 w-2 rounded-sm"
+              style={{ background: s.color }}
+            />
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              {s.label}
+            </span>
+          </div>
+          <div className="mt-1 text-lg font-semibold tabular-nums">
+            {formatNumber(s.count, fmt)}
+          </div>
+          {s.stepRate != null && (
+            <div className="text-[10px] text-muted-foreground">
+              {formatPercent(s.stepRate)}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

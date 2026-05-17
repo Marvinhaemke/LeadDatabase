@@ -179,6 +179,94 @@ export async function getObservedFunnel(
 }
 
 /**
+ * Multi-funnel variant: same shape as `getObservedFunnel`, but grouped
+ * by `lead_events.funnel_key`. Returns one ObservedFunnel per source
+ * key encountered (meta, email, etc.) plus an "(unattributed)" bucket
+ * for events with funnel_key IS NULL.
+ *
+ * Why this is the right place to slice: each event carries the funnel
+ * that was active when it occurred (see apply.ts deriveFunnelKey), so a
+ * lead who entered via Meta, dropped, and re-entered via Email shows
+ * up in BOTH funnels' numbers — in the appropriate stages — without
+ * double-counting (the same event can only have one funnel_key).
+ */
+export interface FunnelGroup {
+  key: string;
+  /** Display label — capitalised key, or '(unattributed)'. */
+  label: string;
+  funnel: ObservedFunnel;
+  totalEvents: number;
+}
+
+export async function getObservedFunnelsBySource(
+  client: Client,
+  companyId: string,
+  from: Date,
+  to: Date,
+): Promise<FunnelGroup[]> {
+  const { data } = await client
+    .from('lead_events')
+    .select('event_type, lead_id, funnel_key')
+    .eq('company_id', companyId)
+    .gte('occurred_at', from.toISOString())
+    .lt('occurred_at', to.toISOString());
+
+  const distinctLeadStages = new Set(['form_submitted', 'qualified', 'disqualified']);
+  // Per-key bucket: type → { rows, leads }
+  const buckets = new Map<
+    string,
+    Map<string, { rows: number; leads: Set<string> }>
+  >();
+
+  for (const r of (data ?? []) as Array<{
+    event_type: string;
+    lead_id: string;
+    funnel_key: string | null;
+  }>) {
+    const key = r.funnel_key ?? '__unattributed__';
+    let typeMap = buckets.get(key);
+    if (!typeMap) {
+      typeMap = new Map();
+      buckets.set(key, typeMap);
+    }
+    let cell = typeMap.get(r.event_type);
+    if (!cell) {
+      cell = { rows: 0, leads: new Set() };
+      typeMap.set(r.event_type, cell);
+    }
+    cell.rows += 1;
+    cell.leads.add(r.lead_id);
+  }
+
+  const groups: FunnelGroup[] = [];
+  for (const [key, typeMap] of buckets) {
+    const counts = new Map<string, number>();
+    let total = 0;
+    for (const [type, cell] of typeMap) {
+      const c = distinctLeadStages.has(type) ? cell.leads.size : cell.rows;
+      counts.set(type, c);
+      total += cell.rows;
+    }
+    groups.push({
+      key,
+      label: key === '__unattributed__' ? '(unattributed)' : labelFor(key),
+      funnel: computeFunnel(counts),
+      totalEvents: total,
+    });
+  }
+
+  // Sort by total event volume descending so the biggest funnel is first;
+  // (unattributed) goes to the bottom regardless.
+  groups.sort((a, b) => {
+    if (a.key === '__unattributed__') return 1;
+    if (b.key === '__unattributed__') return -1;
+    return b.totalEvents - a.totalEvents;
+  });
+
+  return groups;
+}
+
+/**
  * Daily series for a given set of event types — used by the line chart
  * once stages are discovered. Returns one row per day with one column
  * per requested type.

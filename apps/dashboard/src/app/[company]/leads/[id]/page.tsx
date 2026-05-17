@@ -32,6 +32,7 @@ interface LeadEventRow {
   ad_id: string | null;
   booking_id: string | null;
   deal_id: string | null;
+  funnel_key: string | null;
   attributes: Record<string, unknown> | null;
 }
 
@@ -107,7 +108,7 @@ export default async function LeadDetailPage({
     client
       .from('lead_events')
       .select(
-        'id, event_type, event_subtype, occurred_at, amount, currency, source, ad_id, booking_id, deal_id, attributes',
+        'id, event_type, event_subtype, occurred_at, amount, currency, source, ad_id, booking_id, deal_id, funnel_key, attributes',
       )
       .eq('company_id', company.id as string)
       .eq('lead_id', id)
@@ -191,11 +192,16 @@ export default async function LeadDetailPage({
         />
       </section>
 
+      <JourneySection events={events} />
+
       <section>
         <h2 className="text-base font-semibold">Timeline</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Append-only event log driving the funnel views. Bucketed by{' '}
           <code className="rounded bg-muted px-1">occurred_at</code>.
+          The <strong>Funnel</strong> column shows which acquisition path
+          each event belongs to — a lead can flow through multiple funnels
+          over time, and past events keep their original tag.
         </p>
         <div className="mt-3 overflow-x-auto rounded-lg border border-border">
           {events.length === 0 ? (
@@ -208,6 +214,7 @@ export default async function LeadDetailPage({
                 <tr>
                   <th className="px-3 py-2 text-left">When</th>
                   <th className="px-3 py-2 text-left">Event</th>
+                  <th className="px-3 py-2 text-left">Funnel</th>
                   <th className="px-3 py-2 text-left">Source</th>
                   <th className="px-3 py-2 text-left">Refs</th>
                   <th className="px-3 py-2 text-right">Amount</th>
@@ -226,6 +233,9 @@ export default async function LeadDetailPage({
                           {e.event_subtype}
                         </span>
                       )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <FunnelPill funnelKey={e.funnel_key} />
                     </td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">
                       {e.source ?? '—'}
@@ -481,6 +491,113 @@ function DealStatusBadge({ status }: { status: string }) {
         ? 'bg-red-50 text-red-700'
         : 'bg-muted text-muted-foreground';
   return <span className={`rounded px-2 py-0.5 ${tone}`}>{status}</span>;
+}
+
+// =============================================================================
+// Funnel-journey helpers
+// =============================================================================
+
+/**
+ * Stable color per funnel_key so the same source looks the same wherever
+ * it appears. Hashes the key to one of N HSL hues so we don't have to
+ * maintain a palette by hand.
+ */
+function colorForFunnel(key: string | null | undefined): string {
+  if (!key) return 'hsl(220 10% 60%)';
+  if (key === 'meta') return 'hsl(220 70% 55%)';
+  if (key === 'email') return 'hsl(35 90% 50%)';
+  if (key === 'organic' || key === 'google') return 'hsl(160 60% 40%)';
+  if (key === 'newsletter') return 'hsl(280 60% 55%)';
+  // Hash to a hue
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) hash = (hash * 31 + key.charCodeAt(i)) | 0;
+  const hue = Math.abs(hash) % 360;
+  return `hsl(${hue} 55% 45%)`;
+}
+
+function FunnelPill({ funnelKey }: { funnelKey: string | null | undefined }) {
+  if (!funnelKey) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-[11px]">
+      <span
+        className="inline-block h-1.5 w-1.5 rounded-full"
+        style={{ background: colorForFunnel(funnelKey) }}
+      />
+      <span className="font-mono">{funnelKey}</span>
+    </span>
+  );
+}
+
+/**
+ * "Journey" summary: shows the ordered chain of funnels the lead has
+ * touched (form_submitted events are good entry-point markers; if the
+ * lead has wins/losses, also call out the closing funnel). Sorted by
+ * occurred_at ascending so it reads left → right.
+ */
+function JourneySection({ events }: { events: LeadEventRow[] }) {
+  const ordered = [...events].sort((a, b) => a.occurred_at.localeCompare(b.occurred_at));
+
+  // Compress consecutive same-funnel events into a single segment.
+  const segments: Array<{ key: string | null; first: string; last: string; count: number; sawWon: boolean }> = [];
+  for (const e of ordered) {
+    const k = e.funnel_key;
+    const last = segments[segments.length - 1];
+    if (last && last.key === k) {
+      last.last = e.occurred_at;
+      last.count += 1;
+      if (e.event_type === 'won') last.sawWon = true;
+    } else {
+      segments.push({
+        key: k ?? null,
+        first: e.occurred_at,
+        last: e.occurred_at,
+        count: 1,
+        sawWon: e.event_type === 'won',
+      });
+    }
+  }
+
+  if (segments.length === 0) return null;
+
+  const distinctFunnels = new Set(segments.map((s) => s.key));
+  const closingSeg = segments.find((s) => s.sawWon);
+
+  return (
+    <section className="rounded-lg border border-border p-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-base font-semibold">Journey</h2>
+        <span className="text-xs text-muted-foreground">
+          {distinctFunnels.size} {distinctFunnels.size === 1 ? 'funnel' : 'funnels'} touched
+          {closingSeg && (
+            <>
+              {' '}
+              · closed via{' '}
+              <FunnelPill funnelKey={closingSeg.key} />
+            </>
+          )}
+        </span>
+      </div>
+      <ol className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+        {segments.map((seg, i) => (
+          <li key={i} className="flex items-center gap-2">
+            {i > 0 && <span className="text-muted-foreground">→</span>}
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/30 px-2 py-1">
+              <span
+                className="inline-block h-1.5 w-1.5 rounded-full"
+                style={{ background: colorForFunnel(seg.key) }}
+              />
+              <span className="font-mono">{seg.key ?? '(unattributed)'}</span>
+              <span className="text-muted-foreground">
+                {seg.count} event{seg.count === 1 ? '' : 's'}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }
 
 function UtmList({ row }: { row: AttributionRow }) {

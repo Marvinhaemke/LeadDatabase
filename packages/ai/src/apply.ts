@@ -117,9 +117,13 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
   }
 
   // ------------------------------------------------------------------
-  // 4. Attribution — run BEFORE events so events get the ad_id stamp.
+  // 4. Attribution — run BEFORE events so events get the ad_id stamp
+  //    AND the funnel_key tag (which event-stage events get bucketed
+  //    under for the multi-funnel view).
   // ------------------------------------------------------------------
+  let funnelKey: string | null = null;
   if (plan.attribution && hasAnyAttribution(plan.attribution)) {
+    funnelKey = deriveFunnelKey(plan.attribution);
     const matched = await insertAttribution(
       client,
       companyId,
@@ -130,6 +134,13 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
       attributedAdId = matched.adId;
       attributedVia = matched.strategy ?? attributedVia;
     }
+  }
+
+  // If this webhook didn't supply attribution, fall back to the lead's
+  // most-recent attribution row so the events still carry the funnel
+  // they belong to (e.g. a booking webhook after a form submit).
+  if (!funnelKey) {
+    funnelKey = await getLatestFunnelKeyForLead(client, companyId, lead.id);
   }
 
   if (attributedAdId) {
@@ -150,6 +161,7 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
         bookingId: out.bookingId,
         dealId: out.dealId,
         adId: attributedAdId,
+        funnelKey,
       },
       source,
     );
@@ -488,7 +500,7 @@ async function insertEvents(
   companyId: string,
   leadId: string,
   events: LeadEventInput[],
-  refs: { bookingId?: string; dealId?: string; adId?: string },
+  refs: { bookingId?: string; dealId?: string; adId?: string; funnelKey?: string | null },
   source: string,
 ): Promise<string[]> {
   const rows = events.map((e) => ({
@@ -500,6 +512,7 @@ async function insertEvents(
     booking_id: refs.bookingId ?? null,
     deal_id: refs.dealId ?? null,
     ad_id: refs.adId ?? null,
+    funnel_key: refs.funnelKey ?? null,
     amount: e.amount != null ? normalizeMoney(e.amount) : null,
     currency: normalizeCurrency(e.currency ?? null),
     attributes: e.attributes as Json,
@@ -509,6 +522,40 @@ async function insertEvents(
   const { data, error } = await client.from('lead_events').insert(rows).select('id');
   if (error) throw new Error(`lead_events insert failed: ${error.message}`);
   return (data ?? []).map((r) => r.id);
+}
+
+/**
+ * Canonical funnel-key derivation. Matches the SQL `derive_funnel_key`
+ * function used by the backfill — `fbclid` present → 'meta', else
+ * lowercase utm_source verbatim.
+ */
+export function deriveFunnelKey(attr: { fbclid?: string; utm_source?: string }): string | null {
+  if (attr.fbclid && attr.fbclid.trim().length > 0) return 'meta';
+  const src = attr.utm_source?.trim().toLowerCase();
+  return src && src.length > 0 ? src : null;
+}
+
+/**
+ * Look up the lead's most-recent attribution row and derive its funnel
+ * key. Used when a webhook doesn't carry attribution of its own (e.g.
+ * a booking webhook that arrives after the form-submit attribution
+ * was already written).
+ */
+async function getLatestFunnelKeyForLead(
+  client: Client,
+  companyId: string,
+  leadId: string,
+): Promise<string | null> {
+  const { data } = await client
+    .from('lead_attribution')
+    .select('fbclid, utm_source')
+    .eq('company_id', companyId)
+    .eq('lead_id', leadId)
+    .order('captured_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return null;
+  return deriveFunnelKey(data as { fbclid?: string; utm_source?: string });
 }
 
 // =====================================================================
