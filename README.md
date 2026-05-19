@@ -23,7 +23,7 @@ vercel.json             Monorepo install/build + cron schedules
 
 ```bash
 pnpm install
-cp .env.example .env.local
+cp .env.example apps/dashboard/.env.local   # see "Env" note below
 
 # spin up local Supabase (Docker required)
 pnpm db:start
@@ -31,7 +31,23 @@ pnpm db:reset            # apply migrations + seed
 pnpm db:types            # generate packages/db/src/generated.ts
 
 pnpm dev                 # http://localhost:3000
+
+# optional but recommended for the dashboard to render with real data:
+pnpm seed:demo           # synthetic company, ads, leads, multi-funnel journeys
 ```
+
+> **Env note**: `.env.local` lives in `apps/dashboard/`, not the repo root —
+> Next.js loads env files from the app's directory. Copy the
+> `Project URL`, `Publishable` and `Secret` keys printed by
+> `pnpm exec supabase status` into
+> `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` and
+> `SUPABASE_SERVICE_ROLE_KEY` respectively.
+
+After `pnpm seed:demo` the dashboard has ~80 synthetic leads across 60
+days, including multi-funnel journeys (lead enters via Meta, drops out,
+re-engages via email, closes), reschedule chains, and ad spend so the
+ROAS / per-ad views populate. The seed wipes the demo company first so
+re-runs converge on the same state.
 
 ## Architecture summary
 

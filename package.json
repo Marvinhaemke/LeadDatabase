@@ -19,9 +19,11 @@
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "db:diff": "supabase db diff -f",
-    "db:types": "supabase gen types typescript --local > packages/db/src/generated.ts"
+    "db:types": "supabase gen types typescript --local > packages/db/src/generated.ts",
+    "seed:demo": "node --env-file=apps/dashboard/.env.local --experimental-strip-types scripts/seed-demo.ts"
   },
   "devDependencies": {
+    "@supabase/supabase-js": "^2.45.4",
     "prettier": "^3.3.3",
     "supabase": "^2.0.0",
     "typescript": "^5.6.3",
