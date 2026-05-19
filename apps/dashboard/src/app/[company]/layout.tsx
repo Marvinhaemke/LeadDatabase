@@ -36,6 +36,7 @@ export default async function CompanyLayout({
   const navItems = [
     { href: `/${slug}`, label: 'Overview' },
     { href: `/${slug}/funnel`, label: 'Funnel' },
+    { href: `/${slug}/cohorts`, label: 'Cohorts' },
     { href: `/${slug}/ads`, label: 'Ads' },
     { href: `/${slug}/leads`, label: 'Leads' },
     { href: `/${slug}/proposals`, label: 'Field proposals' },
