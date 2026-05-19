@@ -4,10 +4,15 @@ import { KpiCard } from '@/components/kpi-card';
 import { DateRangePicker } from '@/components/date-range-picker';
 import {
   deltaPct,
-  getFunnelDaily,
   getFunnelTotals,
+  getShowUpDaily,
   getSpendTotals,
 } from '@/lib/metrics';
+import {
+  getObservedFunnel,
+  getObservedFunnelDaily,
+  type ObservedStage,
+} from '@/lib/funnels';
 import { resolveRange } from '@/lib/range';
 import {
   formatMoney,
@@ -40,7 +45,6 @@ export default async function CompanyOverviewPage({
     .select('id, currency, timezone')
     .eq('slug', slug)
     .single();
-
   if (!company) return null;
 
   const ctx: CompanyContext = {
@@ -53,31 +57,63 @@ export default async function CompanyOverviewPage({
   const range = resolveRange(sp);
   const { from, to, prevFrom, prevTo } = range;
 
-  const [current, prior, currentSpend, priorSpend, daily] = await Promise.all([
-    getFunnelTotals(client, ctx.id, from, to),
-    getFunnelTotals(client, ctx.id, prevFrom, prevTo),
+  // Current + prior in parallel. The observed funnel adapts the stage
+  // cards to the company's actual shape; the derived metrics (show-up,
+  // ROAS, revenue, spend) always render.
+  const [
+    currFunnel,
+    priorFunnel,
+    currSpend,
+    priorSpend,
+    showUpRows,
+    priorShowUpRows,
+    currTotals,
+    priorTotals,
+  ] = await Promise.all([
+    getObservedFunnel(client, ctx.id, from, to),
+    getObservedFunnel(client, ctx.id, prevFrom, prevTo),
     getSpendTotals(client, ctx.id, from, to),
     getSpendTotals(client, ctx.id, prevFrom, prevTo),
-    getFunnelDaily(client, ctx.id, from, to),
+    getShowUpDaily(client, ctx.id, from, to),
+    getShowUpDaily(client, ctx.id, prevFrom, prevTo),
+    getFunnelTotals(client, ctx.id, from, to),
+    getFunnelTotals(client, ctx.id, prevFrom, prevTo),
   ]);
 
-  // Build per-KPI sparkline series, padded with zeroes for days that have
-  // no events so the X axis is the full window not just the active days.
-  const sparks = buildSparks(daily, range.from, range.to);
+  // Build prior-counts lookup for delta badges on stage cards.
+  const priorCountByType = new Map<string, number>();
+  for (const s of [...priorFunnel.stages, ...priorFunnel.extras]) {
+    priorCountByType.set(s.type, s.count);
+  }
 
-  const showUp = safeDivide(
-    current.bookings_held,
-    current.bookings_held + current.bookings_no_show,
-  );
-  const showUpPrev = safeDivide(
-    prior.bookings_held,
-    prior.bookings_held + prior.bookings_no_show,
-  );
+  // Sparkline data per observed stage.
+  const observedTypes = [
+    ...currFunnel.stages.map((s) => s.type),
+    ...currFunnel.extras.map((s) => s.type),
+  ];
+  const daily =
+    observedTypes.length === 0
+      ? []
+      : await getObservedFunnelDaily(client, ctx.id, observedTypes, from, to);
+  const sparkByType = new Map<string, number[]>();
+  for (const t of observedTypes) {
+    sparkByType.set(
+      t,
+      daily.map((row) => Number(row[t] ?? 0)),
+    );
+  }
 
-  const formToWon = safeDivide(current.wins, current.form_submissions);
-  const heldToWon = safeDivide(current.wins, current.bookings_held);
-  const roas = safeDivide(current.revenue, currentSpend.spend);
-  const roasPrev = safeDivide(prior.revenue, priorSpend.spend);
+  // Derived metrics
+  const held = showUpRows.reduce((n, r) => n + Number(r.held ?? 0), 0);
+  const noShow = showUpRows.reduce((n, r) => n + Number(r.no_show ?? 0), 0);
+  const showUp = safeDivide(held, held + noShow);
+
+  const priorHeld = priorShowUpRows.reduce((n, r) => n + Number(r.held ?? 0), 0);
+  const priorNoShow = priorShowUpRows.reduce((n, r) => n + Number(r.no_show ?? 0), 0);
+  const priorShowUp = safeDivide(priorHeld, priorHeld + priorNoShow);
+
+  const roas = safeDivide(currTotals.revenue, currSpend.spend);
+  const priorRoas = safeDivide(priorTotals.revenue, priorSpend.spend);
 
   return (
     <div className="space-y-8">
@@ -87,7 +123,8 @@ export default async function CompanyOverviewPage({
             <h1 className="text-2xl font-semibold">{range.label}</h1>
             <p className="text-sm text-muted-foreground">
               {range.fromIso} → {range.toIsoInclusive} · compared to the prior{' '}
-              {range.days}-day window
+              {range.days}-day window. Stage cards reflect the funnel shape
+              observed in this window.
             </p>
           </div>
           <DateRangePicker
@@ -98,114 +135,157 @@ export default async function CompanyOverviewPage({
         </div>
       </header>
 
-      <section className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
-        <KpiCard
-          label="Form submissions"
-          value={formatNumber(current.form_submissions, fmt)}
-          delta={deltaBadge(deltaPct(current.form_submissions, prior.form_submissions))}
-          spark={sparks.form_submissions}
-        />
-        <KpiCard
-          label="Bookings created"
-          value={formatNumber(current.bookings_created, fmt)}
-          delta={deltaBadge(deltaPct(current.bookings_created, prior.bookings_created))}
-          hint={`form → booking ${formatPercent(safeDivide(current.bookings_created, current.form_submissions))}`}
-          spark={sparks.bookings_created}
-        />
-        <KpiCard
-          label="Calls held"
-          value={formatNumber(current.bookings_held, fmt)}
-          delta={deltaBadge(deltaPct(current.bookings_held, prior.bookings_held))}
-          hint={`no-shows ${formatNumber(current.bookings_no_show, fmt)}`}
-          spark={sparks.bookings_held}
-        />
-        <KpiCard
-          label="Show-up rate"
-          value={formatPercent(showUp)}
-          delta={deltaBadge(showUp != null && showUpPrev != null ? showUp - showUpPrev : null, true)}
-          hint="held / (held + no-show)"
-        />
+      {currFunnel.stages.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-border bg-muted/30 p-8 text-center text-sm text-muted-foreground">
+          No funnel events recorded in this window yet. Run{' '}
+          <code className="rounded bg-muted px-1">pnpm seed:demo</code> for
+          synthetic data, or send a webhook to{' '}
+          <code className="rounded bg-muted px-1">
+            /api/webhook/{slug}/zapier
+          </code>
+          .
+        </div>
+      ) : (
+        <section>
+          <h2 className="mb-3 text-xs uppercase tracking-wide text-muted-foreground">
+            Funnel stages
+          </h2>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {currFunnel.stages.map((s) => (
+              <KpiCard
+                key={s.type}
+                label={s.label}
+                value={formatNumber(s.count, fmt)}
+                spark={sparkByType.get(s.type)}
+                delta={deltaBadge(deltaPct(s.count, priorCountByType.get(s.type) ?? 0))}
+                hint={
+                  s.stepRate != null
+                    ? `${formatPercent(s.stepRate)} of previous stage`
+                    : undefined
+                }
+              />
+            ))}
+          </div>
+        </section>
+      )}
 
-        <KpiCard
-          label="Qualified"
-          value={formatNumber(current.qualified, fmt)}
-          delta={deltaBadge(deltaPct(current.qualified, prior.qualified))}
-          spark={sparks.qualified}
-        />
-        <KpiCard
-          label="Wins"
-          value={formatNumber(current.wins, fmt)}
-          delta={deltaBadge(deltaPct(current.wins, prior.wins))}
-          hint={`held → won ${formatPercent(heldToWon)}`}
-          spark={sparks.wins}
-        />
-        <KpiCard
-          label="Revenue"
-          value={formatMoney(current.revenue, fmt)}
-          delta={deltaBadge(deltaPct(current.revenue, prior.revenue))}
-          hint={`form → won ${formatPercent(formToWon)}`}
-          spark={sparks.revenue}
-        />
-        <KpiCard
-          label="ROAS"
-          value={formatRoas(roas)}
-          delta={deltaBadge(roas != null && roasPrev != null ? roas - roasPrev : null, true)}
-          hint={`spend ${formatMoney(currentSpend.spend, fmt)}`}
-        />
+      <section>
+        <h2 className="mb-3 text-xs uppercase tracking-wide text-muted-foreground">
+          Derived metrics
+        </h2>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+          <KpiCard
+            label="Show-up rate"
+            value={formatPercent(showUp)}
+            delta={deltaBadge(
+              showUp != null && priorShowUp != null ? showUp - priorShowUp : null,
+              true,
+            )}
+            hint="held / (held + no-show)"
+          />
+          <KpiCard
+            label="ROAS"
+            value={formatRoas(roas)}
+            delta={deltaBadge(
+              roas != null && priorRoas != null ? roas - priorRoas : null,
+              true,
+            )}
+            hint="revenue / spend"
+          />
+          <KpiCard
+            label="Revenue"
+            value={formatMoney(currTotals.revenue, fmt)}
+            delta={deltaBadge(deltaPct(currTotals.revenue, priorTotals.revenue))}
+            hint={
+              currFunnel.stages.length > 0
+                ? `${formatPercent(safeDivide(currTotals.wins, currTotals.form_submissions))} form → won`
+                : undefined
+            }
+          />
+          <KpiCard
+            label="Ad spend"
+            value={formatMoney(currSpend.spend, fmt)}
+            delta={deltaBadge(deltaPct(currSpend.spend, priorSpend.spend))}
+            hint={`${formatNumber(currSpend.clicks, fmt)} clicks`}
+          />
+        </div>
       </section>
 
-      <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <FunnelTable totals={current} fmt={fmt} />
-        <PriorPeriodTable current={current} prior={prior} fmt={fmt} />
-      </section>
+      {currFunnel.extras.length > 0 && (
+        <section>
+          <h2 className="mb-2 text-xs uppercase tracking-wide text-muted-foreground">
+            Other events observed
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {currFunnel.extras.map((s) => {
+              const prior = priorCountByType.get(s.type) ?? 0;
+              const dp = deltaPct(s.count, prior);
+              return (
+                <span
+                  key={s.type}
+                  className="inline-flex items-center gap-2 rounded-full border border-border px-3 py-1 text-xs"
+                >
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ background: s.color }}
+                  />
+                  <span className="font-mono">{s.type}</span>
+                  <span className="tabular-nums">{formatNumber(s.count, fmt)}</span>
+                  {dp != null && (
+                    <span
+                      className={
+                        dp >= 0 ? 'text-emerald-700' : 'text-red-700'
+                      }
+                    >
+                      {dp >= 0 ? '▲' : '▼'} {formatPercent(Math.abs(dp), 0)}
+                    </span>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {currFunnel.stages.length > 0 && (
+        <section className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <AdaptiveFunnelTable stages={currFunnel.stages} fmt={fmt} />
+          <PriorPeriodTable
+            stages={currFunnel.stages}
+            priorCountByType={priorCountByType}
+            currRevenue={currTotals.revenue}
+            priorRevenue={priorTotals.revenue}
+            fmt={fmt}
+          />
+        </section>
+      )}
     </div>
   );
 }
 
-function deltaBadge(value: number | null, isAbsolute = false): { value: string; positive?: boolean } | null {
+function deltaBadge(
+  value: number | null,
+  isAbsolute = false,
+): { value: string; positive?: boolean } | null {
   if (value == null) return null;
   if (value === 0) return { value: '0%', positive: true };
   const positive = value > 0;
-  const formatted = isAbsolute ? `${(value * 100).toFixed(1)}pp` : formatPercent(value, 1);
-  return { value: positive ? `▲ ${formatted}` : `▼ ${formatted.replace('-', '')}`, positive };
+  const formatted = isAbsolute
+    ? `${(value * 100).toFixed(1)}pp`
+    : formatPercent(value, 1);
+  return {
+    value: positive ? `▲ ${formatted}` : `▼ ${formatted.replace('-', '')}`,
+    positive,
+  };
 }
 
-function FunnelTable({
-  totals,
+function AdaptiveFunnelTable({
+  stages,
   fmt,
 }: {
-  totals: ReturnType<typeof Object> & {
-    form_submissions: number;
-    bookings_created: number;
-    bookings_held: number;
-    qualified: number;
-    wins: number;
-  };
+  stages: ObservedStage[];
   fmt: { currency: string; locale: string };
 }) {
-  const stages: Array<{ label: string; value: number; rate?: number | null }> = [
-    { label: 'Form submissions', value: totals.form_submissions },
-    {
-      label: 'Bookings created',
-      value: totals.bookings_created,
-      rate: safeDivide(totals.bookings_created, totals.form_submissions),
-    },
-    {
-      label: 'Calls held',
-      value: totals.bookings_held,
-      rate: safeDivide(totals.bookings_held, totals.bookings_created),
-    },
-    {
-      label: 'Qualified',
-      value: totals.qualified,
-      rate: safeDivide(totals.qualified, totals.bookings_held),
-    },
-    {
-      label: 'Wins',
-      value: totals.wins,
-      rate: safeDivide(totals.wins, totals.qualified),
-    },
-  ];
   return (
     <div className="rounded-lg border border-border">
       <div className="border-b border-border bg-muted/30 px-4 py-2 text-sm font-medium">
@@ -221,13 +301,21 @@ function FunnelTable({
         </thead>
         <tbody>
           {stages.map((s) => (
-            <tr key={s.label} className="border-t border-border">
-              <td className="px-4 py-2">{s.label}</td>
+            <tr key={s.type} className="border-t border-border">
+              <td className="px-4 py-2">
+                <span className="inline-flex items-center gap-2">
+                  <span
+                    className="inline-block h-2 w-3 rounded-sm"
+                    style={{ background: s.color }}
+                  />
+                  {s.label}
+                </span>
+              </td>
               <td className="px-4 py-2 text-right tabular-nums">
-                {formatNumber(s.value, fmt)}
+                {formatNumber(s.count, fmt)}
               </td>
               <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
-                {s.rate != null ? formatPercent(s.rate) : '—'}
+                {s.stepRate != null ? formatPercent(s.stepRate) : '—'}
               </td>
             </tr>
           ))}
@@ -238,38 +326,28 @@ function FunnelTable({
 }
 
 function PriorPeriodTable({
-  current,
-  prior,
+  stages,
+  priorCountByType,
+  currRevenue,
+  priorRevenue,
   fmt,
 }: {
-  current: { form_submissions: number; bookings_held: number; wins: number; revenue: number };
-  prior: { form_submissions: number; bookings_held: number; wins: number; revenue: number };
+  stages: ObservedStage[];
+  priorCountByType: Map<string, number>;
+  currRevenue: number;
+  priorRevenue: number;
   fmt: { currency: string; locale: string };
 }) {
-  const rows: Array<{
-    label: string;
-    cur: string;
-    prev: string;
-  }> = [
-    {
-      label: 'Form submissions',
-      cur: formatNumber(current.form_submissions, fmt),
-      prev: formatNumber(prior.form_submissions, fmt),
-    },
-    {
-      label: 'Calls held',
-      cur: formatNumber(current.bookings_held, fmt),
-      prev: formatNumber(prior.bookings_held, fmt),
-    },
-    {
-      label: 'Wins',
-      cur: formatNumber(current.wins, fmt),
-      prev: formatNumber(prior.wins, fmt),
-    },
+  const rows: Array<{ label: string; cur: string; prev: string }> = [
+    ...stages.map((s) => ({
+      label: s.label,
+      cur: formatNumber(s.count, fmt),
+      prev: formatNumber(priorCountByType.get(s.type) ?? 0, fmt),
+    })),
     {
       label: 'Revenue',
-      cur: formatMoney(current.revenue, fmt),
-      prev: formatMoney(prior.revenue, fmt),
+      cur: formatMoney(currRevenue, fmt),
+      prev: formatMoney(priorRevenue, fmt),
     },
   ];
   return (
@@ -299,56 +377,4 @@ function PriorPeriodTable({
       </table>
     </div>
   );
-}
-
-/**
- * Build per-KPI daily arrays padded with zeroes for missing days, ordered
- * chronologically from `from` to `to` (exclusive). Sparklines need a
- * dense series so the X axis is the full window not just the active days.
- */
-function buildSparks(
-  daily: Array<{
-    day: string;
-    form_submissions: number;
-    bookings_created: number;
-    bookings_held: number;
-    qualified: number;
-    wins: number;
-    revenue: number;
-  }>,
-  from: Date,
-  to: Date,
-): {
-  form_submissions: number[];
-  bookings_created: number[];
-  bookings_held: number[];
-  qualified: number[];
-  wins: number[];
-  revenue: number[];
-} {
-  const byDay = new Map(daily.map((d) => [d.day, d]));
-  const days: string[] = [];
-  const cursor = new Date(from);
-  while (cursor.getTime() < to.getTime()) {
-    days.push(cursor.toISOString().slice(0, 10));
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  const out = {
-    form_submissions: [] as number[],
-    bookings_created: [] as number[],
-    bookings_held: [] as number[],
-    qualified: [] as number[],
-    wins: [] as number[],
-    revenue: [] as number[],
-  };
-  for (const d of days) {
-    const row = byDay.get(d);
-    out.form_submissions.push(Number(row?.form_submissions ?? 0));
-    out.bookings_created.push(Number(row?.bookings_created ?? 0));
-    out.bookings_held.push(Number(row?.bookings_held ?? 0));
-    out.qualified.push(Number(row?.qualified ?? 0));
-    out.wins.push(Number(row?.wins ?? 0));
-    out.revenue.push(Number(row?.revenue ?? 0));
-  }
-  return out;
 }
