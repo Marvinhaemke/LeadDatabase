@@ -467,6 +467,111 @@ describe('applyPlan / funnel_key', () => {
 });
 
 // -----------------------------------------------------------------------------
+// User-defined funnel definitions override the source-based fallback
+// -----------------------------------------------------------------------------
+
+describe('applyPlan / funnel_definitions', () => {
+  it('matches a user-defined funnel by landing_url and stamps its key', async () => {
+    const c = makeFakeClient();
+    c.seed('funnel_definitions', [
+      {
+        id: '11111111-1111-1111-1111-111111111111',
+        company_id: COMPANY,
+        key: 'vsl_consulting',
+        label: 'VSL — Consulting',
+        priority: 10,
+        filters: [{ field: 'landing_url', op: 'contains', value: '/vsl' }],
+        archived_at: null,
+      },
+    ]);
+
+    await applyPlan(
+      baseArgs(c, {
+        action: 'apply',
+        lead_identity: { email: 'jane@example.com' },
+        attribution: {
+          utm_source: 'meta',
+          fbclid: 'IwAR_x',
+          landing_url: 'https://acme.example.com/vsl-page',
+        },
+        events: [{ type: 'form_submitted' }],
+      }),
+    );
+
+    const events = c.tableRows('lead_events') as Array<{ funnel_key: string | null }>;
+    // The user-defined funnel wins over the meta-source fallback.
+    expect(events[0]!.funnel_key).toBe('vsl_consulting');
+  });
+
+  it("falls back to deriveFunnelKey when no defined funnel matches", async () => {
+    const c = makeFakeClient();
+    c.seed('funnel_definitions', [
+      {
+        id: '22222222-2222-2222-2222-222222222222',
+        company_id: COMPANY,
+        key: 'vsl_consulting',
+        label: 'VSL',
+        priority: 10,
+        filters: [{ field: 'landing_url', op: 'contains', value: '/vsl' }],
+        archived_at: null,
+      },
+    ]);
+
+    await applyPlan(
+      baseArgs(c, {
+        action: 'apply',
+        lead_identity: { email: 'jane@example.com' },
+        attribution: { utm_source: 'meta', fbclid: 'IwAR_x', landing_url: 'https://acme.example.com/quiz' },
+        events: [{ type: 'form_submitted' }],
+      }),
+    );
+    const events = c.tableRows('lead_events') as Array<{ funnel_key: string | null }>;
+    expect(events[0]!.funnel_key).toBe('meta');
+  });
+
+  it('picks the lowest-priority defined funnel when multiple would match', async () => {
+    const c = makeFakeClient();
+    c.seed('funnel_definitions', [
+      {
+        id: '33333333-3333-3333-3333-333333333333',
+        company_id: COMPANY,
+        key: 'meta_broad',
+        label: 'Meta broad',
+        priority: 100,
+        filters: [{ field: 'utm_source', op: 'eq', value: 'meta' }],
+        archived_at: null,
+      },
+      {
+        id: '44444444-4444-4444-4444-444444444444',
+        company_id: COMPANY,
+        key: 'vsl_consulting',
+        label: 'VSL — Consulting',
+        priority: 10,
+        filters: [
+          { field: 'utm_source', op: 'eq', value: 'meta' },
+          { field: 'landing_url', op: 'contains', value: '/vsl' },
+        ],
+        archived_at: null,
+      },
+    ]);
+
+    await applyPlan(
+      baseArgs(c, {
+        action: 'apply',
+        lead_identity: { email: 'jane@example.com' },
+        attribution: {
+          utm_source: 'meta',
+          landing_url: 'https://acme.example.com/vsl',
+        },
+        events: [{ type: 'form_submitted' }],
+      }),
+    );
+    const events = c.tableRows('lead_events') as Array<{ funnel_key: string | null }>;
+    expect(events[0]!.funnel_key).toBe('vsl_consulting');
+  });
+});
+
+// -----------------------------------------------------------------------------
 // Field proposals
 // -----------------------------------------------------------------------------
 

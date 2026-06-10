@@ -44,7 +44,7 @@ interface QueryResult<T = Row | Row[] | null> {
 
 interface Filter {
   col: string;
-  op: 'eq' | 'in' | 'not_is_null' | 'gte' | 'lt' | 'or';
+  op: 'eq' | 'in' | 'not_is_null' | 'gte' | 'lt' | 'or' | 'is_null';
   val?: unknown;
   raw?: string;
 }
@@ -78,6 +78,11 @@ class Builder implements PromiseLike<QueryResult> {
   }
   not(col: string, _op: string, _val: unknown): this {
     this.filters.push({ col, op: 'not_is_null' });
+    return this;
+  }
+  is(col: string, val: unknown): this {
+    // Only the `is(null)` form is used by app code; mirror that.
+    if (val === null) this.filters.push({ col, op: 'is_null' });
     return this;
   }
   gte(col: string, val: unknown): this {
@@ -215,6 +220,8 @@ class Builder implements PromiseLike<QueryResult> {
             return Array.isArray(f.val) && (f.val as unknown[]).includes(r[f.col]);
           case 'not_is_null':
             return r[f.col] != null;
+          case 'is_null':
+            return r[f.col] == null;
           case 'gte':
             return (r[f.col] as number | string) >= (f.val as number | string);
           case 'lt':

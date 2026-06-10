@@ -23,6 +23,11 @@ import {
   normalizeMoney,
   normalizePhone,
 } from './normalize';
+import {
+  matchFunnel,
+  type AttributionContext,
+  type FunnelDefinition,
+} from './funnel-rules';
 import type {
   AttributionInput,
   BookingInput,
@@ -121,9 +126,8 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
   //    AND the funnel_key tag (which event-stage events get bucketed
   //    under for the multi-funnel view).
   // ------------------------------------------------------------------
-  let funnelKey: string | null = null;
+  let matchedAdIdForCtx: string | undefined;
   if (plan.attribution && hasAnyAttribution(plan.attribution)) {
-    funnelKey = deriveFunnelKey(plan.attribution);
     const matched = await insertAttribution(
       client,
       companyId,
@@ -134,11 +138,29 @@ export async function applyPlan(args: ApplyArgs): Promise<AppliedChanges> {
       attributedAdId = matched.adId;
       attributedVia = matched.strategy ?? attributedVia;
     }
+    matchedAdIdForCtx = matched.adId;
   }
 
-  // If this webhook didn't supply attribution, fall back to the lead's
-  // most-recent attribution row so the events still carry the funnel
-  // they belong to (e.g. a booking webhook after a form submit).
+  // Build an attribution context for funnel resolution:
+  //   - use this webhook's attribution if it carried any,
+  //   - else the lead's most-recent attribution row.
+  // Then evaluate user-defined funnels first; fall back to the
+  // source-based deriveFunnelKey when nothing matches OR no rules exist.
+  const attrCtx = await buildAttributionContext(
+    client,
+    companyId,
+    lead.id,
+    plan.attribution,
+    matchedAdIdForCtx ?? lead.attributed_ad_id ?? undefined,
+  );
+
+  let funnelKey: string | null = null;
+  if (attrCtx) {
+    funnelKey = await resolveFunnelKeyFromRules(client, companyId, attrCtx);
+    if (!funnelKey) {
+      funnelKey = deriveFunnelKey(attrCtx);
+    }
+  }
   if (!funnelKey) {
     funnelKey = await getLatestFunnelKeyForLead(client, companyId, lead.id);
   }
@@ -525,13 +547,17 @@ async function insertEvents(
 }
 
 /**
- * Canonical funnel-key derivation. Matches the SQL `derive_funnel_key`
- * function used by the backfill — `fbclid` present → 'meta', else
- * lowercase utm_source verbatim.
+ * Canonical source-based funnel-key derivation. Matches the SQL
+ * `derive_funnel_key` function used by the backfill — `fbclid` present
+ * → 'meta', else lowercase utm_source verbatim. Used as the fallback
+ * when no user-defined funnel matched.
  */
-export function deriveFunnelKey(attr: { fbclid?: string; utm_source?: string }): string | null {
-  if (attr.fbclid && attr.fbclid.trim().length > 0) return 'meta';
-  const src = attr.utm_source?.trim().toLowerCase();
+export function deriveFunnelKey(attr: {
+  fbclid?: string | null;
+  utm_source?: string | null;
+}): string | null {
+  if (attr.fbclid && String(attr.fbclid).trim().length > 0) return 'meta';
+  const src = attr.utm_source?.toString().trim().toLowerCase();
   return src && src.length > 0 ? src : null;
 }
 
@@ -556,6 +582,134 @@ async function getLatestFunnelKeyForLead(
     .maybeSingle();
   if (!data) return null;
   return deriveFunnelKey(data as { fbclid?: string; utm_source?: string });
+}
+
+// =====================================================================
+// User-defined funnel resolution
+// =====================================================================
+
+/**
+ * Build an AttributionContext used by funnel-rule evaluation:
+ *   - prefer this webhook's attribution (if it carried any),
+ *   - else fetch the lead's most-recent lead_attribution row,
+ *   - and (optionally) resolve the ad/campaign external_ids via the
+ *     matched ad so rules can filter on them.
+ *
+ * Returns null when no attribution is available at all — caller falls
+ * back to whatever signal it has (lead's prior funnel_key).
+ */
+async function buildAttributionContext(
+  client: Client,
+  companyId: string,
+  leadId: string,
+  webhookAttr: AttributionInput | null | undefined,
+  resolvedAdId: string | undefined,
+): Promise<AttributionContext | null> {
+  let raw:
+    | {
+        fbclid?: string | null;
+        utm_source?: string | null;
+        utm_medium?: string | null;
+        utm_campaign?: string | null;
+        utm_content?: string | null;
+        utm_term?: string | null;
+        landing_url?: string | null;
+        referrer_url?: string | null;
+      }
+    | null = null;
+
+  if (webhookAttr && hasAnyAttribution(webhookAttr)) {
+    raw = {
+      fbclid: webhookAttr.fbclid ?? null,
+      utm_source: webhookAttr.utm_source ?? null,
+      utm_medium: webhookAttr.utm_medium ?? null,
+      utm_campaign: webhookAttr.utm_campaign ?? null,
+      utm_content: webhookAttr.utm_content ?? null,
+      utm_term: webhookAttr.utm_term ?? null,
+      landing_url: webhookAttr.landing_url ?? null,
+      referrer_url: webhookAttr.referrer_url ?? null,
+    };
+  } else {
+    const { data } = await client
+      .from('lead_attribution')
+      .select(
+        'fbclid, utm_source, utm_medium, utm_campaign, utm_content, utm_term, landing_url, referrer_url',
+      )
+      .eq('company_id', companyId)
+      .eq('lead_id', leadId)
+      .order('captured_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data) raw = data as unknown as typeof raw;
+  }
+
+  // Resolve ad/campaign external_ids when an ad is in play. Cheap join
+  // via PostgREST's nested embed; the permissive Database type means
+  // the navigation is loosely typed.
+  let adExternalId: string | null = null;
+  let campaignExternalId: string | null = null;
+  if (resolvedAdId) {
+    const { data: adRow } = await client
+      .from('ads')
+      .select('external_id, ad_sets:ad_set_id ( campaigns:campaign_id ( external_id ) )')
+      .eq('id', resolvedAdId)
+      .eq('company_id', companyId)
+      .maybeSingle();
+    if (adRow) {
+      const ad = adRow as {
+        external_id: string | null;
+        ad_sets:
+          | { campaigns: { external_id: string | null } | { external_id: string | null }[] | null }
+          | { campaigns: { external_id: string | null } | { external_id: string | null }[] | null }[]
+          | null;
+      };
+      adExternalId = ad.external_id ?? null;
+      const adSet = Array.isArray(ad.ad_sets) ? ad.ad_sets[0] : ad.ad_sets;
+      const camp = adSet
+        ? Array.isArray(adSet.campaigns)
+          ? adSet.campaigns[0]
+          : adSet.campaigns
+        : null;
+      campaignExternalId = camp?.external_id ?? null;
+    }
+  }
+
+  if (!raw && !adExternalId && !campaignExternalId) return null;
+
+  return {
+    fbclid: raw?.fbclid ?? null,
+    utm_source: raw?.utm_source ?? null,
+    utm_medium: raw?.utm_medium ?? null,
+    utm_campaign: raw?.utm_campaign ?? null,
+    utm_content: raw?.utm_content ?? null,
+    utm_term: raw?.utm_term ?? null,
+    landing_url: raw?.landing_url ?? null,
+    referrer_url: raw?.referrer_url ?? null,
+    ad_external_id: adExternalId,
+    campaign_external_id: campaignExternalId,
+  };
+}
+
+/**
+ * Look up the company's active funnel definitions and match the
+ * supplied attribution context. Returns the winning funnel's key or
+ * null when nothing matches. The list is small (operator-curated) so
+ * the read is cheap; if it ever isn't, add a short-TTL cache.
+ */
+async function resolveFunnelKeyFromRules(
+  client: Client,
+  companyId: string,
+  ctx: AttributionContext,
+): Promise<string | null> {
+  const { data } = await client
+    .from('funnel_definitions')
+    .select('id, key, label, priority, filters')
+    .eq('company_id', companyId)
+    .is('archived_at', null)
+    .order('priority', { ascending: true });
+  const funnels = (data ?? []) as FunnelDefinition[];
+  if (funnels.length === 0) return null;
+  return matchFunnel(funnels, ctx)?.key ?? null;
 }
 
 // =====================================================================
