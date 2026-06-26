@@ -99,8 +99,11 @@ export async function createFunnel(formData: FormData): Promise<void> {
     redirect(`/${slug}/funnels/new?error=${encodeURIComponent(message)}`);
   }
 
+  const updated = await rematchForCompany(slug);
   revalidatePath(`/${slug}/funnels`);
-  redirect(`/${slug}/funnels?created=${encodeURIComponent(parsed.data.key)}`);
+  redirect(
+    `/${slug}/funnels?created=${encodeURIComponent(parsed.data.key)}&rematched=${updated}`,
+  );
 }
 
 export async function updateFunnel(formData: FormData): Promise<void> {
@@ -133,8 +136,11 @@ export async function updateFunnel(formData: FormData): Promise<void> {
     redirect(`/${slug}/funnels/${id}?error=${encodeURIComponent(message)}`);
   }
 
+  const updated = await rematchForCompany(slug);
   revalidatePath(`/${slug}/funnels`);
-  redirect(`/${slug}/funnels?updated=${encodeURIComponent(parsed.data.key)}`);
+  redirect(
+    `/${slug}/funnels?updated=${encodeURIComponent(parsed.data.key)}&rematched=${updated}`,
+  );
 }
 
 export async function archiveFunnel(formData: FormData): Promise<void> {
@@ -149,8 +155,9 @@ export async function archiveFunnel(formData: FormData): Promise<void> {
     .update({ archived_at: new Date().toISOString() })
     .eq('id', id);
 
+  const updated = await rematchForCompany(slug);
   revalidatePath(`/${slug}/funnels`);
-  redirect(`/${slug}/funnels?archived=1`);
+  redirect(`/${slug}/funnels?archived=1&rematched=${updated}`);
 }
 
 export async function restoreFunnel(formData: FormData): Promise<void> {
@@ -161,8 +168,9 @@ export async function restoreFunnel(formData: FormData): Promise<void> {
 
   const admin = createSupabaseAdminClient();
   await admin.from('funnel_definitions').update({ archived_at: null }).eq('id', id);
+  const updated = await rematchForCompany(slug);
   revalidatePath(`/${slug}/funnels`);
-  redirect(`/${slug}/funnels?restored=1`);
+  redirect(`/${slug}/funnels?restored=1&rematched=${updated}`);
 }
 
 // ----------------------------------------------------------------------------
@@ -184,7 +192,21 @@ export async function restoreFunnel(formData: FormData): Promise<void> {
 export async function rematchFunnels(formData: FormData): Promise<void> {
   const slug = String(formData.get('company_slug') ?? '');
   await requireCompanyAdmin(slug);
+  const updated = await rematchForCompany(slug);
+  revalidatePath(`/${slug}/funnels`);
+  redirect(`/${slug}/funnels?rematched=${updated}`);
+}
 
+/**
+ * Re-stamp every lead_event for the company under the current rule set.
+ * Returns the number of events whose `funnel_key` actually changed (so
+ * the operator sees a meaningful count after every save). Caller is
+ * responsible for the redirect/revalidation.
+ *
+ * IMPORTANT: this is auth-trusted on entry — only call from server
+ * actions that have already passed requireCompanyAdmin(slug).
+ */
+async function rematchForCompany(slug: string): Promise<number> {
   const admin = createSupabaseAdminClient();
   const companyId = await resolveCompanyId(admin, slug);
 
@@ -241,7 +263,9 @@ export async function rematchFunnels(formData: FormData): Promise<void> {
       ad_sets: unknown;
     }>) {
       const adSets = ad.ad_sets;
-      const adSet = Array.isArray(adSets) ? (adSets[0] as { campaigns?: unknown } | undefined) : (adSets as { campaigns?: unknown } | undefined);
+      const adSet = Array.isArray(adSets)
+        ? (adSets[0] as { campaigns?: unknown } | undefined)
+        : (adSets as { campaigns?: unknown } | undefined);
       const camps = adSet?.campaigns;
       const camp = Array.isArray(camps)
         ? (camps[0] as { external_id?: string } | undefined)
@@ -253,7 +277,6 @@ export async function rematchFunnels(formData: FormData): Promise<void> {
     }
   }
 
-  // Per-event work
   let updated = 0;
   for (const evt of (events ?? []) as Array<{
     id: string;
@@ -281,8 +304,7 @@ export async function rematchFunnels(formData: FormData): Promise<void> {
     }
   }
 
-  revalidatePath(`/${slug}/funnels`);
-  redirect(`/${slug}/funnels?rematched=${updated}`);
+  return updated;
 }
 
 function buildContext(
