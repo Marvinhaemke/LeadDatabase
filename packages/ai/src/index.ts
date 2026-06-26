@@ -13,4 +13,17 @@ export {
   getCachedSchemaSummary,
   invalidateSchemaSummary,
 } from './schema-summary';
-export { applyPlan, type ApplyArgs, type AppliedChanges } from './apply';
+export { applyPlan, deriveFunnelKey, type ApplyArgs, type AppliedChanges } from './apply';
+export {
+  FILTER_FIELDS,
+  FILTER_OPS,
+  FilterSchema,
+  FunnelDefinitionSchema,
+  evaluateFilter,
+  matchFunnel,
+  type FilterCondition,
+  type FilterField,
+  type FilterOp,
+  type FunnelDefinition,
+  type AttributionContext,
+} from './funnel-rules';

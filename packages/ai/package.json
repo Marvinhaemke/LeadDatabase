@@ -11,7 +11,8 @@
     "./normalize": "./src/normalize.ts",
     "./gemini": "./src/gemini.ts",
     "./apply": "./src/apply.ts",
-    "./schema-summary": "./src/schema-summary.ts"
+    "./schema-summary": "./src/schema-summary.ts",
+    "./funnel-rules": "./src/funnel-rules.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
