@@ -263,12 +263,18 @@ export default async function FunnelDetailPage({
             label="Spend (allocated)"
             value={formatMoney(economics.spend, fmt)}
             hint={`${formatNumber(economics.attributedEvents, fmt)} ad-attributed events`}
+            href={explainHref(slug, id, 'spend', sp)}
           />
-          <Stat label="Revenue" value={formatMoney(economics.revenue, fmt)} />
+          <Stat
+            label="Revenue"
+            value={formatMoney(economics.revenue, fmt)}
+            href={explainHref(slug, id, 'revenue', sp)}
+          />
           <Stat
             label="ROAS"
             value={formatRoas(economics.roas)}
             hint={economics.spend === 0 ? 'no spend in window' : undefined}
+            href={explainHref(slug, id, 'roas', sp)}
           />
         </div>
       </section>
@@ -459,18 +465,52 @@ function Stat({
   label,
   value,
   hint,
+  href,
 }: {
   label: string;
   value: string;
   hint?: string;
+  href?: string;
 }) {
-  return (
-    <div className="rounded-lg border border-border p-4">
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
+  const body = (
+    <>
+      <div className="flex items-baseline justify-between">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
+        {href && (
+          <span className="text-[10px] text-muted-foreground hover:text-foreground">
+            explain →
+          </span>
+        )}
+      </div>
       <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
       {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
-    </div>
+    </>
   );
+  if (href) {
+    return (
+      <Link
+        href={href}
+        className="block rounded-lg border border-border p-4 transition hover:border-foreground/40 hover:bg-muted/30"
+      >
+        {body}
+      </Link>
+    );
+  }
+  return <div className="rounded-lg border border-border p-4">{body}</div>;
+}
+
+function explainHref(
+  slug: string,
+  id: string,
+  metric: 'roas' | 'revenue' | 'spend',
+  current: { range?: string; from?: string; to?: string },
+): string {
+  const sp = new URLSearchParams();
+  if (current.range) sp.set('range', current.range);
+  if (current.from) sp.set('from', current.from);
+  if (current.to) sp.set('to', current.to);
+  const qs = sp.toString();
+  return `/${slug}/funnels/${id}/explain/${metric}${qs ? `?${qs}` : ''}`;
 }
 
 function StageStrip({

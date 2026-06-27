@@ -403,6 +403,167 @@ export async function getFunnelEconomics(
   };
 }
 
+/**
+ * Per-ad detail behind `getFunnelEconomics`'s `spend` total. Each row
+ * shows the allocation math (total spend, this funnel's event share,
+ * resulting attributed spend). Used by the explain page so operators
+ * can audit how the funnel's spend number was computed.
+ */
+export interface SpendAllocationRow {
+  adId: string;
+  adName: string | null;
+  adExternalId: string | null;
+  totalSpend: number;
+  thisFunnelEvents: number;
+  totalEvents: number;
+  share: number;
+  allocatedSpend: number;
+}
+
+export async function getFunnelSpendBreakdown(
+  client: Client,
+  companyId: string,
+  from: Date,
+  to: Date,
+  funnelKey: string,
+): Promise<SpendAllocationRow[]> {
+  const { data: adEvents } = await client
+    .from('lead_events')
+    .select('ad_id, funnel_key')
+    .eq('company_id', companyId)
+    .not('ad_id', 'is', null)
+    .gte('occurred_at', from.toISOString())
+    .lt('occurred_at', to.toISOString());
+
+  const adMix = new Map<string, { thisFunnel: number; total: number }>();
+  for (const r of (adEvents ?? []) as Array<{ ad_id: string; funnel_key: string | null }>) {
+    const s = adMix.get(r.ad_id) ?? { thisFunnel: 0, total: 0 };
+    s.total += 1;
+    if (r.funnel_key === funnelKey) s.thisFunnel += 1;
+    adMix.set(r.ad_id, s);
+  }
+
+  const adIds = [...adMix.keys()];
+  if (adIds.length === 0) return [];
+
+  const [{ data: spendRows }, { data: adRows }] = await Promise.all([
+    client
+      .from('ad_metrics_daily')
+      .select('ad_id, spend')
+      .eq('company_id', companyId)
+      .in('ad_id', adIds)
+      .gte('date', isoDate(from))
+      .lt('date', isoDate(to)),
+    client
+      .from('ads')
+      .select('id, name, external_id')
+      .eq('company_id', companyId)
+      .in('id', adIds),
+  ]);
+
+  const spendByAd = new Map<string, number>();
+  for (const r of (spendRows ?? []) as Array<{ ad_id: string; spend: number | null }>) {
+    spendByAd.set(r.ad_id, (spendByAd.get(r.ad_id) ?? 0) + Number(r.spend ?? 0));
+  }
+  const adById = new Map(
+    ((adRows ?? []) as Array<{ id: string; name: string | null; external_id: string | null }>).map(
+      (a) => [a.id, a],
+    ),
+  );
+
+  const rows: SpendAllocationRow[] = adIds.map((id) => {
+    const mix = adMix.get(id)!;
+    const totalSpend = spendByAd.get(id) ?? 0;
+    const share = mix.total > 0 ? mix.thisFunnel / mix.total : 0;
+    const ad = adById.get(id);
+    return {
+      adId: id,
+      adName: ad?.name ?? null,
+      adExternalId: ad?.external_id ?? null,
+      totalSpend,
+      thisFunnelEvents: mix.thisFunnel,
+      totalEvents: mix.total,
+      share,
+      allocatedSpend: totalSpend * share,
+    };
+  });
+  // Sort by allocated spend descending, then by total spend so zero-event
+  // ads still sort sensibly.
+  return rows.sort(
+    (a, b) => b.allocatedSpend - a.allocatedSpend || b.totalSpend - a.totalSpend,
+  );
+}
+
+/**
+ * Individual `won` events that sum to the funnel's revenue. One row per
+ * event with the lead it came from and the ad (if any) attributed at
+ * event time.
+ */
+export interface RevenueLineRow {
+  eventId: string;
+  occurredAt: string;
+  leadId: string;
+  leadFirstName: string | null;
+  leadLastName: string | null;
+  leadEmail: string | null;
+  adId: string | null;
+  adName: string | null;
+  amount: number;
+  currency: string | null;
+}
+
+export async function getFunnelRevenueLines(
+  client: Client,
+  companyId: string,
+  from: Date,
+  to: Date,
+  funnelKey: string,
+): Promise<RevenueLineRow[]> {
+  const { data } = await client
+    .from('lead_events')
+    .select(
+      'id, occurred_at, lead_id, ad_id, amount, currency, leads:lead_id ( first_name, last_name, email ), ads:ad_id ( name )',
+    )
+    .eq('company_id', companyId)
+    .eq('event_type', 'won')
+    .eq('funnel_key', funnelKey)
+    .gte('occurred_at', from.toISOString())
+    .lt('occurred_at', to.toISOString())
+    .order('occurred_at', { ascending: false });
+
+  return ((data ?? []) as Array<{
+    id: string;
+    occurred_at: string;
+    lead_id: string;
+    ad_id: string | null;
+    amount: number | null;
+    currency: string | null;
+    leads: unknown;
+    ads: unknown;
+  }>).map((r) => {
+    const lead = pickJoinOne<{ first_name: string | null; last_name: string | null; email: string | null }>(r.leads);
+    const ad = pickJoinOne<{ name: string | null }>(r.ads);
+    return {
+      eventId: r.id,
+      occurredAt: r.occurred_at,
+      leadId: r.lead_id,
+      leadFirstName: lead?.first_name ?? null,
+      leadLastName: lead?.last_name ?? null,
+      leadEmail: lead?.email ?? null,
+      adId: r.ad_id,
+      adName: ad?.name ?? null,
+      amount: Number(r.amount ?? 0),
+      currency: r.currency,
+    };
+  });
+}
+
+function pickJoinOne<T>(value: unknown): T | null {
+  if (value == null) return null;
+  if (Array.isArray(value)) return ((value[0] as T) ?? null);
+  return value as T;
+}
+
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
