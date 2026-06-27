@@ -142,13 +142,16 @@ export async function getObservedFunnel(
   companyId: string,
   from: Date,
   to: Date,
+  funnelKey?: string,
 ): Promise<ObservedFunnel> {
-  const { data } = await client
+  let query = client
     .from('lead_events')
     .select('event_type, lead_id')
     .eq('company_id', companyId)
     .gte('occurred_at', from.toISOString())
     .lt('occurred_at', to.toISOString());
+  if (funnelKey) query = query.eq('funnel_key', funnelKey);
+  const { data } = await query;
 
   // For form_submitted / qualified we count distinct leads (a lead can
   // submit twice; we don't want that to inflate). For event-shaped
@@ -277,16 +280,19 @@ export async function getObservedFunnelDaily(
   types: string[],
   from: Date,
   to: Date,
+  funnelKey?: string,
 ): Promise<Array<Record<string, string | number>>> {
   if (types.length === 0) return [];
 
-  const { data } = await client
+  let query = client
     .from('lead_events')
     .select('event_type, occurred_at')
     .eq('company_id', companyId)
     .gte('occurred_at', from.toISOString())
     .lt('occurred_at', to.toISOString())
     .in('event_type', types);
+  if (funnelKey) query = query.eq('funnel_key', funnelKey);
+  const { data } = await query;
 
   const byDay = new Map<string, Map<string, number>>();
   for (const r of (data ?? []) as Array<{ event_type: string; occurred_at: string }>) {

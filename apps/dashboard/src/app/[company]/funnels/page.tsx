@@ -195,7 +195,7 @@ export default async function FunnelsPage({
                     ) : (
                       <div className="flex justify-end gap-2">
                         <Link
-                          href={`/${slug}/funnels/${f.id}`}
+                          href={`/${slug}/funnels/${f.id}/edit`}
                           className="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
                         >
                           Edit

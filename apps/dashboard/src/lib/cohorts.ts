@@ -149,11 +149,12 @@ export async function getCohortTable(
   until: Date,
   bucket: CohortBucket = 'week',
   horizonDays = 60,
+  funnelKey?: string,
 ): Promise<CohortTable> {
   const columns = buildColumns(bucket, horizonDays);
 
   // 1. Entry events in window — used to assign cohort membership.
-  const { data: entryRows } = await client
+  let entryQuery = client
     .from('lead_events')
     .select('lead_id, occurred_at')
     .eq('company_id', companyId)
@@ -161,6 +162,8 @@ export async function getCohortTable(
     .gte('occurred_at', since.toISOString())
     .lt('occurred_at', until.toISOString())
     .order('occurred_at', { ascending: true });
+  if (funnelKey) entryQuery = entryQuery.eq('funnel_key', funnelKey);
+  const { data: entryRows } = await entryQuery;
 
   const entries = new Map<string, Date>();
   for (const r of (entryRows ?? []) as Array<{ lead_id: string; occurred_at: string }>) {

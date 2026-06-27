@@ -99,10 +99,18 @@ export async function createFunnel(formData: FormData): Promise<void> {
     redirect(`/${slug}/funnels/new?error=${encodeURIComponent(message)}`);
   }
 
+  // Need the new row's id for the post-create redirect to the detail page.
+  const { data: created } = await admin
+    .from('funnel_definitions')
+    .select('id')
+    .eq('company_id', company)
+    .eq('key', parsed.data.key)
+    .single();
+
   const updated = await rematchForCompany(slug);
   revalidatePath(`/${slug}/funnels`);
   redirect(
-    `/${slug}/funnels?created=${encodeURIComponent(parsed.data.key)}&rematched=${updated}`,
+    `/${slug}/funnels/${created?.id}?created=${encodeURIComponent(parsed.data.key)}&rematched=${updated}`,
   );
 }
 
@@ -139,7 +147,7 @@ export async function updateFunnel(formData: FormData): Promise<void> {
   const updated = await rematchForCompany(slug);
   revalidatePath(`/${slug}/funnels`);
   redirect(
-    `/${slug}/funnels?updated=${encodeURIComponent(parsed.data.key)}&rematched=${updated}`,
+    `/${slug}/funnels/${id}?updated=${encodeURIComponent(parsed.data.key)}&rematched=${updated}`,
   );
 }
 
