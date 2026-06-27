@@ -306,6 +306,103 @@ export function deltaPct(current: number, previous: number): number | null {
   return (current - previous) / previous;
 }
 
+// ---------------------------------------------------------------------------
+// Per-funnel spend / revenue / ROAS
+//
+// An ad can serve multiple funnels (e.g. one Meta ad whose leads split
+// across a VSL landing-page funnel and a Quiz funnel via different
+// landing URLs). To answer "what did THIS funnel cost?" we proportionally
+// allocate each ad's window spend across the funnels its events landed
+// in, weighted by event count. Win revenue is summed directly off the
+// funnel-tagged won events. ROAS = revenue / allocated spend.
+//
+// Honest about its assumption: event-count weighting treats every event
+// equally, which over-credits funnels that fire many low-value events.
+// For high-fidelity attribution swap in a different weighting (per-lead,
+// per-conversion) — the helper interface stays the same.
+// ---------------------------------------------------------------------------
+
+export interface FunnelEconomics {
+  spend: number;
+  revenue: number;
+  roas: number | null;
+  /** Total events with ad_id for this funnel — denominator for spend share. */
+  attributedEvents: number;
+}
+
+export async function getFunnelEconomics(
+  client: Client,
+  companyId: string,
+  from: Date,
+  to: Date,
+  funnelKey: string,
+): Promise<FunnelEconomics> {
+  // 1) Every event-with-ad in the window. We need per-ad funnel mix to
+  //    allocate spend.
+  const { data: adEvents } = await client
+    .from('lead_events')
+    .select('ad_id, funnel_key')
+    .eq('company_id', companyId)
+    .not('ad_id', 'is', null)
+    .gte('occurred_at', from.toISOString())
+    .lt('occurred_at', to.toISOString());
+
+  const adMix = new Map<string, { thisFunnel: number; total: number }>();
+  for (const r of (adEvents ?? []) as Array<{ ad_id: string; funnel_key: string | null }>) {
+    const stats = adMix.get(r.ad_id) ?? { thisFunnel: 0, total: 0 };
+    stats.total += 1;
+    if (r.funnel_key === funnelKey) stats.thisFunnel += 1;
+    adMix.set(r.ad_id, stats);
+  }
+
+  // 2) Spend per ad in the window.
+  let allocatedSpend = 0;
+  const adIds = [...adMix.keys()];
+  if (adIds.length > 0) {
+    const { data: spendRows } = await client
+      .from('ad_metrics_daily')
+      .select('ad_id, spend')
+      .eq('company_id', companyId)
+      .in('ad_id', adIds)
+      .gte('date', isoDate(from))
+      .lt('date', isoDate(to));
+
+    const spendByAd = new Map<string, number>();
+    for (const r of (spendRows ?? []) as Array<{ ad_id: string; spend: number | null }>) {
+      spendByAd.set(r.ad_id, (spendByAd.get(r.ad_id) ?? 0) + Number(r.spend ?? 0));
+    }
+
+    for (const [adId, spend] of spendByAd) {
+      const stats = adMix.get(adId);
+      if (!stats || stats.total === 0) continue;
+      allocatedSpend += spend * (stats.thisFunnel / stats.total);
+    }
+  }
+
+  // 3) Revenue: sum of won-event amounts for this funnel in the window.
+  const { data: wonRows } = await client
+    .from('lead_events')
+    .select('amount')
+    .eq('company_id', companyId)
+    .eq('funnel_key', funnelKey)
+    .eq('event_type', 'won')
+    .gte('occurred_at', from.toISOString())
+    .lt('occurred_at', to.toISOString());
+  const revenue = ((wonRows ?? []) as Array<{ amount: number | null }>).reduce(
+    (n, r) => n + Number(r.amount ?? 0),
+    0,
+  );
+
+  const attributedEvents = [...adMix.values()].reduce((n, s) => n + s.thisFunnel, 0);
+
+  return {
+    spend: Math.round(allocatedSpend * 100) / 100,
+    revenue,
+    roas: allocatedSpend > 0 ? Number((revenue / allocatedSpend).toFixed(4)) : null,
+    attributedEvents,
+  };
+}
+
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10);
 }

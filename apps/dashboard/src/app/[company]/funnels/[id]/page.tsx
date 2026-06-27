@@ -10,14 +10,17 @@ import {
   type ObservedStage,
 } from '@/lib/funnels';
 import { getCohortTable } from '@/lib/cohorts';
+import { getFunnelEconomics } from '@/lib/metrics';
 import { resolveRange } from '@/lib/range';
 import { DateRangePicker } from '@/components/date-range-picker';
 import { LineChart } from '@/components/line-chart';
 import {
   formatDate,
   formatDateTime,
+  formatMoney,
   formatNumber,
   formatPercent,
+  formatRoas,
 } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
@@ -89,7 +92,7 @@ export default async function FunnelDetailPage({
     : 'won';
 
   // Everything below is scoped to this funnel's key.
-  const [observed, cohort, leadIdRows] = await Promise.all([
+  const [observed, cohort, leadIdRows, economics] = await Promise.all([
     getObservedFunnel(client, company.id as string, range.from, range.to, funnel.key),
     getCohortTable(
       client,
@@ -111,6 +114,7 @@ export default async function FunnelDetailPage({
       .lt('occurred_at', range.to.toISOString())
       .order('occurred_at', { ascending: false })
       .limit(1000),
+    getFunnelEconomics(client, company.id as string, range.from, range.to, funnel.key),
   ]);
 
   // Recent leads — distinct, ordered by their most-recent event in window.
@@ -221,7 +225,7 @@ export default async function FunnelDetailPage({
         </div>
       </header>
 
-      <section className="grid grid-cols-1 gap-3 md:grid-cols-4">
+      <section className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
         <Stat label="Events in window" value={formatNumber(totalEvents, fmt)} />
         <Stat
           label="Distinct leads"
@@ -243,6 +247,30 @@ export default async function FunnelDetailPage({
             return entry > 0 ? formatPercent(target / entry) : '—';
           })()}
         />
+      </section>
+
+      <section>
+        <h2 className="mb-2 text-base font-semibold">Economics</h2>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Spend is each ad's window total, allocated to this funnel by its
+          share of the ad's events (so a Meta ad serving both VSL and Quiz
+          funnels splits proportionally). Revenue is the sum of{' '}
+          <code className="rounded bg-muted px-1">won</code> event amounts
+          tagged with this funnel.
+        </p>
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <Stat
+            label="Spend (allocated)"
+            value={formatMoney(economics.spend, fmt)}
+            hint={`${formatNumber(economics.attributedEvents, fmt)} ad-attributed events`}
+          />
+          <Stat label="Revenue" value={formatMoney(economics.revenue, fmt)} />
+          <Stat
+            label="ROAS"
+            value={formatRoas(economics.roas)}
+            hint={economics.spend === 0 ? 'no spend in window' : undefined}
+          />
+        </div>
       </section>
 
       <section>
